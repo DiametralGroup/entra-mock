@@ -76,7 +76,7 @@ BoondManager's static credential.
 
 Four groups, one per authorization rule of insights360
 (`grp-bi-rh`, `grp-bi-sales`, `grp-bi-direction` → rule 3, scope by group;
-`grp-comex` → rule 4, full visibility).
+`grp-bi-comex` → rule 4, full visibility).
 
 ⚠️ **The UPNs are those of boondmanager-mock's `realiste` dataset, and that is
 load-bearing.** The UPN is the *only* join key between the directory and the
@@ -95,7 +95,7 @@ Two of those UPNs exist **only** to exercise the join between the two sources:
 - **`kevin.silva@boreal-conseil.example`** — present in HR, member of **no group**. He must see
   only himself (rule 1).
 
-`grp-comex` deliberately overlaps `grp-bi-direction` (`arthur.ivanov`, the top
+`grp-bi-comex` deliberately overlaps `grp-bi-direction` (`arthur.ivanov`, the top
 of the hierarchy, the only one without a manager): the Comex grants him *every*
 collaborator — Nantes included — while the outer RLS perimeter of `bi_rh` and
 `bi_sales` excludes Nantes. That couple is what makes the `inner ⊆ outer`

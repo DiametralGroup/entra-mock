@@ -36,7 +36,7 @@ def _tous_les_membres(client, auth) -> set[str]:
 
 def test_les_quatre_groupes_des_quatre_regles(client, auth):
     noms = {g["displayName"] for g in tous_les_groupes(client, auth)}
-    assert {"grp-bi-rh", "grp-bi-sales", "grp-bi-direction", "grp-comex"} <= noms
+    assert {"grp-bi-rh", "grp-bi-sales", "grp-bi-direction", "grp-bi-comex"} <= noms
 
 
 def test_le_groupe_imbrique_n_ajoute_aucune_appartenance(client, auth):
@@ -84,7 +84,7 @@ def test_comex_recoupe_direction(client, auth):
     portée par groupe : c'est ce recoupement qui éprouve la déduplication de
     l'union des règles."""
     groupes = {g["displayName"]: g["id"] for g in tous_les_groupes(client, auth)}
-    comex = client.get(f"/v1.0/groups/{groupes['grp-comex']}/members", headers=auth).json()
+    comex = client.get(f"/v1.0/groups/{groupes['grp-bi-comex']}/members", headers=auth).json()
     direction = client.get(
         f"/v1.0/groups/{groupes['grp-bi-direction']}/members", headers=auth
     ).json()
