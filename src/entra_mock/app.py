@@ -119,7 +119,20 @@ def _guid(graine: str) -> str:
 #
 # Les quatre groupes correspondent aux quatre règles d'autorisation :
 #   grp-bi-rh / grp-bi-sales / grp-bi-direction → règle 3 (portée du groupe)
-#   grp-comex                                   → règle 4 (visibilité totale)
+#   grp-bi-comex                                → règle 4 (visibilité totale)
+#
+# ⚠️ `grp-bi-comex`, et non `grp-comex` — renommé le 2026-09-15. Le locataire
+#    réel porte les DEUX : l'ancien est vide et mort, le vrai groupe des
+#    associés est `grp-bi-comex`, et c'est celui sur lequel le consommateur
+#    (insights360:int_acl_regles.sql) keye désormais sa règle 4.
+#
+#    Ce que ce mock a coûté en restant sur l'ancien nom : côté consommateur,
+#    la règle 4 ne correspondait plus à personne dans le jeu de test, et la
+#    suite restait VERTE — `arthur.ivanov` est aussi membre de
+#    `grp-bi-direction`, qui lui donnait assez de visibilité pour que les
+#    assertions tiennent. Une règle d'autorisation entière avait cessé d'être
+#    éprouvée sans qu'un seul test ne bouge. C'est précisément le mode de
+#    panne qu'un mock existe pour empêcher.
 GROUPES: dict[str, dict[str, Any]] = {
     "11111111-0000-0000-0000-000000000001": {
         "displayName": "grp-bi-rh",
@@ -143,7 +156,7 @@ GROUPES: dict[str, dict[str, Any]] = {
         "membres": [_d("arthur.ivanov@{d}")],
     },
     "11111111-0000-0000-0000-000000000004": {
-        "displayName": "grp-comex",
+        "displayName": "grp-bi-comex",
         # Le sommet de la hiérarchie, seul sans manager. Le Comex lui donne
         # TOUS les collaborateurs, Nantes compris — alors que le périmètre RLS
         # externe de bi_rh et bi_sales exclut Nantes. C'est ce couple qui fait
