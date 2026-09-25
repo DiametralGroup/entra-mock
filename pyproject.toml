@@ -4,7 +4,7 @@ version = "0.4.0"
 description = "Microsoft Graph mock (Entra group membership) — container image and installable Python package"
 readme = "README.md"
 requires-python = ">=3.12"
-license = { text = "Proprietary" }
+license = "Apache-2.0"
 
 # Volontairement minimales, comme les trois autres mocks de l'écosystème.
 # `python-multipart` n'est PAS accessoire : le flux client credentials de Graph
