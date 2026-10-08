@@ -1,7 +1,7 @@
 [project]
 name = "entra-mock"
-version = "0.4.0"
-description = "Microsoft Graph mock (Entra group membership) — container image and installable Python package"
+version = "0.5.0"
+description = "Microsoft Graph mock (Entra group membership, SharePoint drive files) — container image and installable Python package"
 readme = "README.md"
 requires-python = ">=3.12"
 license = "Apache-2.0"
@@ -11,17 +11,27 @@ license = "Apache-2.0"
 # poste un corps form-encoded, et sans lui FastAPI ne sait pas le lire. Un mock
 # qui accepterait du JSON laisserait passer un client incapable de parler à la
 # vraie API.
+# `openpyxl` non plus : le dépôt Finance (balances, taux) est FABRIQUÉ au
+# démarrage à partir de code — aucun classeur binaire n'est commité.
 dependencies = [
     "fastapi>=0.115",
     "uvicorn[standard]>=0.34",
     "python-multipart>=0.0.20",
+    "openpyxl>=3.1",
 ]
 
 [project.scripts]
 entra-mock = "entra_mock.__main__:main"
 
 [dependency-groups]
-dev = ["pytest>=8.3", "httpx>=0.28", "ruff>=0.8", "mypy>=1.13", "pyyaml>=6.0"]
+dev = [
+    "pytest>=8.3",
+    "httpx>=0.28",
+    "ruff>=0.8",
+    "mypy>=1.13",
+    "pyyaml>=6.0",
+    "types-openpyxl>=3.1",
+]
 
 [build-system]
 requires = ["hatchling"]

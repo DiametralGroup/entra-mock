@@ -2,14 +2,20 @@
 
 La propriété qu'il ne faut pas perdre : l'application que la stack interroge
 EST celle que les tests exercent.
+
+Le plan de contrôle `/__admin` est monté — le montage est conditionnel et la
+configuration est lue à l'import, d'où le réglage posé AVANT l'import du paquet.
 """
 
 from __future__ import annotations
 
 import base64
 import json
+import os
 import time
 from importlib import import_module
+
+os.environ.setdefault("ENTRA_MOCK_ADMIN_ENABLED", "true")
 
 import pytest
 from fastapi.testclient import TestClient
@@ -20,10 +26,12 @@ import entra_mock as mock
 # paquet : importer le module par son nom est le seul accès non ambigu à ses
 # constantes (taille de page, étranglement) que les tests doivent piloter.
 app_module = import_module("entra_mock.app")
+drive_module = import_module("entra_mock.drive")
 
 TENANT = "00000000-0000-0000-0000-000000000000"
 CLIENT_ID = "00000000-0000-0000-0000-000000000000"
 CLIENT_SECRET = "change-me-entra"
+ADMIN = {"X-Mock-Admin-Token": "mock-admin-token"}
 
 
 @pytest.fixture()
