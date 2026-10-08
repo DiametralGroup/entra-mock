@@ -2,7 +2,8 @@
 
 A mock of the **Microsoft Graph** endpoints used for **Entra group
 membership** — the OAuth2 client-credentials flow, `/v1.0/groups` and
-`/v1.0/groups/{id}/members` with opaque-cursor pagination.
+`/v1.0/groups/{id}/members` with opaque-cursor pagination — plus, since
+0.5.0, a **Microsoft Graph files (driveItem) surface for client tests**.
 
 Extracted from the `mock/` directory of
 [insights360](https://github.com/LittleBigCode/insights360) so it follows the
@@ -72,6 +73,82 @@ Tokens are checked for real: audience **and** expiry. That is what makes the
 client-side renewal path testable — the main operational difference with
 BoondManager's static credential.
 
+## Files (driveItem) surface
+
+A Microsoft Graph files (driveItem) surface for client tests: one site, its
+default document library `Documents`, and **nothing in it** — the drive starts
+**empty**. Tests put the files they need through the `/__admin` control plane
+(below); the mock ships no file dataset.
+
+| Endpoint | Notes |
+|---|---|
+| `GET /v1.0/sites/{hostname}:/{path}` | the site by host + server-relative path (trailing `:` accepted, case-insensitive); unknown host → `400 invalidRequest`, unknown path → `404 itemNotFound` |
+| `GET /v1.0/sites/{site-id}` | the site by its **composite** id `host,{guid},{guid}` |
+| `GET /v1.0/sites/{site-id}/drive` · `/drives` | the default library (`b!…` drive id), or the collection of one |
+| `GET /v1.0/drives/{drive-id}` | the drive |
+| `GET /v1.0/drives/{drive-id}/root` · `/root/children` | the root, its children |
+| `GET /v1.0/drives/{drive-id}/root:/{path}` | an item by path (trailing `:` accepted, case-insensitive) |
+| `GET /v1.0/drives/{drive-id}/root:/{path}:/children` | a folder's children by path |
+| `GET /v1.0/drives/{drive-id}/items/{item-id}` · `/children` | an item / a folder's children by id (`01…`) |
+| `GET …/items/{item-id}/content` · `…/root:/{path}:/content` | **`302`** to a pre-authenticated download URL |
+
+What the mock is strict about, as the real service is:
+
+- **Pagination** — `/children` pages by an **opaque `$skiptoken`** with an
+  absolute `@odata.nextLink` (2 per page by default). `$top` is a *ceiling*:
+  `$top=500` still yields 2 items and a next link. `$select` and `$top` are
+  carried over to the next link.
+- **`$select`** — returns exactly the requested properties; an unknown property
+  is `400 BadRequest`. Without it, the wide default set is returned, including
+  `createdBy` / `lastModifiedBy` (a generic `Mock User`,
+  `user@example.invalid`) and `@microsoft.graph.downloadUrl`.
+- **Hashes** — files carry **only `quickXorHash`** (checked against reference
+  vectors), never `sha1Hash` / `sha256Hash`.
+- **Versions** — `eTag` is `"{GUID},n"`, `cTag` is `"c:{GUID},n"`; overwriting
+  a file keeps its id and bumps `n`.
+- **Download** — `/content` answers `302` with an absolute `Location`. That URL
+  carries its own short-lived `tempauth`: it returns `401` if an
+  `Authorization` header is sent, and `401` if the `tempauth` is unknown,
+  tampered with, issued for another item, or expired.
+- **Site grant** — with `ENTRA_MOCK_SITE_GRANT=none` (or the admin call below),
+  every files route returns `403 accessDenied`: the token is valid, the
+  `Sites.Selected` grant is missing. Distinct from `401` (token) and `404`
+  (path).
+- **Common preamble** — every Graph route checks the Bearer and honours the
+  injected `429` (`ENTRA_MOCK_THROTTLE_EVERY`), exactly like `/v1.0/groups`.
+- **Deterministic clock** — item timestamps never read the wall clock: each
+  write advances a mock clock by one minute from a fixed base, so the same
+  sequence of writes yields the same timestamps and ids, run after run.
+
+### Control plane (`/__admin`)
+
+Mounted **only** when `ENTRA_MOCK_ADMIN_ENABLED=true` (off by default — off
+means *not mounted*); every call carries `X-Mock-Admin-Token:
+$ENTRA_MOCK_ADMIN_TOKEN`. Not part of the published contract.
+
+| Call | Effect |
+|---|---|
+| `PUT /__admin/drive/files/{path}` | write a file; the **raw body** is its content. Intermediate folders are created. `201` on create; `200` on overwrite (same id, `n`+1, mock clock advanced). `?lastModifiedDateTime=YYYY-MM-DDTHH:MM:SSZ` sets the file's date instead of the mock clock |
+| `DELETE /__admin/drive/files/{path}` | delete a file, or a folder and everything under it — `204`, or `404` |
+| `POST /__admin/drive/reset` | back to an **empty** drive (counters and clock too) |
+| `GET /__admin/drive/counters` | served calls per operation (`site`, `drive`, `drives`, `item`, `children`, `content`, `download`) — only authenticated, non-throttled calls count |
+| `POST /__admin/drive/grant` | `{"grant": "none"}` or `{"grant": "read"}` — flip the site grant at runtime |
+| `POST /__admin/reset` | everything: drive, counters, grant, and the throttling cadence |
+
+```bash
+ADMIN='X-Mock-Admin-Token: mock-admin-token'
+curl -X PUT -H "$ADMIN" --data-binary 'hello' \
+  http://localhost:8011/__admin/drive/files/reports/report-1.txt
+SITE=$(curl -s -H "Authorization: Bearer $TOKEN" \
+  'http://localhost:8011/v1.0/sites/contoso.sharepoint.com:/sites/documents' \
+  | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')
+DRIVE=$(curl -s -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8011/v1.0/sites/$SITE/drive" \
+  | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')
+curl -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8011/v1.0/drives/$DRIVE/root:/reports:/children"
+```
+
 ## The dataset, and the two edge cases that justify it
 
 Four groups, one per authorization rule of insights360
@@ -122,13 +199,21 @@ member — silently, without any error.
 | `ENTRA_MOCK_THROTTLE_EVERY` | `0` (off) | return `429` on every Nth authenticated call |
 | `ENTRA_MOCK_RETRY_AFTER` | `1` | the `Retry-After` served with those `429` |
 | `ENTRA_MOCK_UPN_DOMAIN` | `boreal-conseil.example` | UPN domain — must match the BoondManager mock's dataset (see above) |
+| `ENTRA_MOCK_SITE_HOSTNAME` | `contoso.sharepoint.com` | host of the served site |
+| `ENTRA_MOCK_SITE_PATH` | `/sites/documents` | server-relative path of the served site |
+| `ENTRA_MOCK_SITE_GRANT` | `read` | `none` → `403 accessDenied` on every files route |
+| `ENTRA_MOCK_DRIVE_PAGE_SIZE` | `2` | children per page |
+| `ENTRA_MOCK_TEMPAUTH_SECONDS` | `3600` | lifetime of a pre-authenticated download URL |
+| `ENTRA_MOCK_DOWNLOAD_BASE_URL` | *(request base URL)* | base of download URLs — set a second name of the container to make the redirect change origin |
+| `ENTRA_MOCK_ADMIN_ENABLED` | `false` | mount the `/__admin` control plane |
+| `ENTRA_MOCK_ADMIN_TOKEN` | `mock-admin-token` | expected `X-Mock-Admin-Token` |
 | `ENTRA_MOCK_HOST` / `_PORT` | `0.0.0.0` / `8000` | uvicorn bind |
 
 ## Development
 
 ```bash
 make bootstrap   # uv sync
-make test        # pytest — OAuth2 flow, pagination, dialect, dataset
+make test        # pytest — OAuth2 flow, pagination, dialect, dataset, files
 make lint        # ruff + mypy --strict
 make contract    # regenerate contracts/msgraph.openapi.yaml
 ```
@@ -140,7 +225,8 @@ The version is bumped in lockstep in `pyproject.toml`,
 
 | Version | Dataset |
 |---|---|
-| `0.3.0` | same UPNs, plus `grp-bi-imbrique` (a nested group + a service principal, no direct membership) and `/transitiveMembers`. Faithful to six dialect facts the mock used to get wrong — the current one |
+| `0.5.0` | same directory dataset; adds the Graph files (driveItem) surface — empty drive by default — and the `/__admin` control plane |
+| `0.3.0` | same UPNs, plus `grp-bi-imbrique` (a nested group + a service principal, no direct membership) and `/transitiveMembers`. Faithful to six dialect facts the mock used to get wrong |
 | `0.2.0` | UPNs of boondmanager-mock's **`realiste`** dataset (`@boreal-conseil.example`) |
 | `0.1.0` | the historical `@ent.fr` dataset, superseded; it joins with nothing since boondmanager-mock 0.3.0 |
 
