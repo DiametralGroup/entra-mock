@@ -128,7 +128,7 @@ $ENTRA_MOCK_ADMIN_TOKEN`. Not part of the published contract.
 
 | Call | Effect |
 |---|---|
-| `PUT /__admin/drive/files/{path}` | write a file; the **raw body** is its content. Intermediate folders are created. `201` on create; `200` on overwrite (same id, `n`+1, mock clock advanced) |
+| `PUT /__admin/drive/files/{path}` | write a file; the **raw body** is its content. Intermediate folders are created. `201` on create; `200` on overwrite (same id, `n`+1, mock clock advanced). `?lastModifiedDateTime=YYYY-MM-DDTHH:MM:SSZ` sets the file's date instead of the mock clock |
 | `DELETE /__admin/drive/files/{path}` | delete a file, or a folder and everything under it — `204`, or `404` |
 | `POST /__admin/drive/reset` | back to an **empty** drive (counters and clock too) |
 | `GET /__admin/drive/counters` | served calls per operation (`site`, `drive`, `drives`, `item`, `children`, `content`, `download`) — only authenticated, non-throttled calls count |

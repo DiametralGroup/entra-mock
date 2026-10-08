@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import hmac
 import os
+import re
 from typing import Any, Literal
 
 from fastapi import APIRouter, Header, Request, Response
@@ -25,6 +26,8 @@ from pydantic import BaseModel
 
 from .app import _erreur_graph, reinitialiser_appels
 from .drive import _rendu, lecteur_mock, nom_valide
+
+_ISO_UTC = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z")
 
 ADMIN_TOKEN = os.environ.get("ENTRA_MOCK_ADMIN_TOKEN", "mock-admin-token")
 
@@ -61,13 +64,21 @@ async def ecrire(
     201 à la création, 200 à l'écrasement — qui garde l'identifiant, passe le
     `n` de `eTag`/`cTag` à n+1 et avance `lastModifiedDateTime` d'une minute
     sur l'horloge du mock (jamais l'horloge murale : cf. `drive.py`).
+
+    `?lastModifiedDateTime=2026-09-05T08:00:00Z` fixe la date du fichier au
+    lieu de l'horloge du mock.
     """
     if (refus := _refuse(x_mock_admin_token)) is not None:
         return refus
     if not nom_valide(chemin):
         return _erreur_graph(400, "invalidRequest", f"Invalid file name: '{chemin}'")
+    modifie = request.query_params.get("lastModifiedDateTime")
+    if modifie is not None and not _ISO_UTC.fullmatch(modifie):
+        return _erreur_graph(
+            400, "invalidRequest", "lastModifiedDateTime: expected YYYY-MM-DDTHH:MM:SSZ"
+        )
     try:
-        element, cree = lecteur_mock.ecrire(chemin, await request.body())
+        element, cree = lecteur_mock.ecrire(chemin, await request.body(), modifie)
     except (IsADirectoryError, NotADirectoryError) as exc:
         return _erreur_graph(409, "nameAlreadyExists", f"A folder is in the way: '{exc}'")
     return JSONResponse(_rendu(element, request), status_code=201 if cree else 200)

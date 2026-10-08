@@ -313,12 +313,19 @@ class Lecteur:
             if e.contenu is not None and cle.startswith(prefixe)
         )
 
-    def ecrire(self, chemin: str, contenu: bytes) -> tuple[Element, bool]:
+    def ecrire(
+        self, chemin: str, contenu: bytes, modifie: str | None = None
+    ) -> tuple[Element, bool]:
         """Crée ou ÉCRASE un fichier.
 
         L'écrasement GARDE l'identifiant (c'est le même élément), incrémente le
         `n` de `eTag`/`cTag` et avance `lastModifiedDateTime` sur l'horloge du
         mock. Les dossiers intermédiaires sont créés.
+
+        `modifie` (ISO 8601 en UTC) remplace l'horloge du mock pour CE fichier :
+        un client qui raisonne sur la date d'un fichier — « ce mois était-il
+        clos quand le fichier a été écrit ? » — a besoin de dates choisies, pas
+        d'une horloge qui part du 1er janvier.
         """
         chemin = "/".join(p for p in chemin.split("/") if p)
         with self.verrou:
@@ -328,7 +335,7 @@ class Lecteur:
                     raise IsADirectoryError(chemin)
                 self._remplir(existant, contenu)
                 existant.version += 1
-                existant.modifie = self.instant()
+                existant.modifie = modifie or self.instant()
                 existant.modificateur = dict(UTILISATEUR)
                 return existant, False
             morceaux = chemin.split("/")
@@ -339,7 +346,7 @@ class Lecteur:
                     self._creer(parent, None, instant, instant, dict(UTILISATEUR))
                 elif not dossier.dossier:
                     raise NotADirectoryError(parent)
-            instant = self.instant()
+            instant = modifie or self.instant()
             return self._creer(chemin, contenu, instant, instant, dict(UTILISATEUR)), True
 
     def retirer(self, chemin: str) -> bool:

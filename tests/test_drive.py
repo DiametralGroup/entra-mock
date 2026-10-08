@@ -643,3 +643,25 @@ def test_le_contrat_publie_est_a_jour_et_couvre_les_fichiers():
         "302"
         in publie["paths"]["/v1.0/drives/{drive_id}/items/{item_id}/content"]["get"]["responses"]
     )
+
+
+def test_le_plan_de_controle_peut_dater_un_fichier(client, auth):
+    r = client.put(
+        "/__admin/drive/files/reports/q3.txt?lastModifiedDateTime=2025-10-05T08:00:00Z",
+        content=b"q3",
+        headers=ADMIN,
+    )
+    assert r.status_code == 201
+    assert element(client, auth, "reports/q3.txt")["lastModifiedDateTime"] == "2025-10-05T08:00:00Z"
+    # sans le paramètre, l'horloge du mock reprend la main
+    assert ecrire(client, "reports/q3.txt", b"q3 bis").status_code == 200
+    assert element(client, auth, "reports/q3.txt")["lastModifiedDateTime"] != "2025-10-05T08:00:00Z"
+
+
+def test_une_date_mal_ecrite_est_refusee(client):
+    r = client.put(
+        "/__admin/drive/files/reports/q3.txt?lastModifiedDateTime=05/10/2025",
+        content=b"q3",
+        headers=ADMIN,
+    )
+    assert r.status_code == 400 and r.json()["error"]["code"] == "invalidRequest"
