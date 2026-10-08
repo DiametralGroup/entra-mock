@@ -390,10 +390,10 @@ paths:
   /v1.0/drives/{drive_id}/root:/{chemin}:
     get:
       summary: Par Chemin
-      description: "L'adressage PAR CHEMIN, sous ses trois formes :\n\n• `root:/Insights360:/children`\
+      description: "L'adressage PAR CHEMIN, sous ses trois formes :\n\n• `root:/Insights360/NTE:/children`\
         \ — les enfants d'un dossier, PAGINÉS\n  (`@odata.nextLink`, `$skiptoken`\
-        \ opaque), `$select` honoré ;\n• `root:/Insights360/balance_NTE_2026-01.xlsx`\
-        \ (deux-points final\n  facultatif) — un élément ;\n• `root:/Insights360/balance_NTE_2026-01.xlsx:/content`\
+        \ opaque), `$select` honoré ;\n• `root:/Insights360/NTE/balance_NTE_2026-01.xlsx`\
+        \ (deux-points final\n  facultatif) — un élément ;\n• `root:/Insights360/NTE/balance_NTE_2026-01.xlsx:/content`\
         \ — 302 vers l'URL\n  de téléchargement.\n\nLa casse du chemin est indifférente,\
         \ comme dans SharePoint."
       operationId: par_chemin_v1_0_drives__drive_id__root___chemin__get

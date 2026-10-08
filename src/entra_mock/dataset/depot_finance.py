@@ -43,6 +43,8 @@ TITRE_SITE = "Dépôt Finance"
 BIBLIOTHEQUE = "Documents"
 DOSSIER = "Insights360"
 SOUS_DOSSIER = "modeles"
+#: Le sous-dossier des taux — à côté des dossiers d'entité (cf. DOSSIERS).
+DOSSIER_TAUX = "TAUX"
 
 #: Les en-têtes EXACTS — le consommateur refuse tout fichier qui s'en écarte,
 #: et la variante `_entete` existe pour le vérifier.
@@ -531,7 +533,8 @@ def classeur_taux(horodatage: datetime, *, supplementaires: Sequence[list[Any]] 
 
 def _modele(horodatage: datetime) -> bytes:
     """Le modèle que la Finance recopie chaque mois — un en-tête et une notice.
-    Il vit dans un SOUS-DOSSIER, que le consommateur doit ignorer."""
+    Il vit dans `modeles/`, qui n'est PAS un dossier de dépôt : le consommateur
+    doit l'ignorer."""
     return classeur(
         [
             Feuille("balance", [list(ENTETE_BALANCE)]),
@@ -540,6 +543,7 @@ def _modele(horodatage: datetime) -> bytes:
                 [
                     ["Une feuille `balance`, un fichier par entité et par mois."],
                     ["Nom : balance_<CODE>_<AAAA-MM>.xlsx — CODE parmi NTE, BOG, MTL."],
+                    ["Dépôt : dans le dossier de l'entité, Insights360/<CODE>/."],
                     ["Montants : mouvements du mois, au centime, sans formule."],
                 ],
             ),
@@ -583,11 +587,36 @@ class Fichier:
     version: int = 1
 
 
-#: Les dossiers, du plus haut au plus profond, avec leur date de création.
+# ┌─ UN DOSSIER PAR ENTITÉ, ET UN POUR LES TAUX ───────────────────────────────┐
+# │ Chaque pays dépose LUI-MÊME ses balances. Les droits d'écriture se posent  │
+# │ au niveau du DOSSIER dans SharePoint : Bogota écrit dans `BOG/` et nulle   │
+# │ part ailleurs, la Finance du groupe tient `TAUX/`. Un dossier unique       │
+# │ obligerait à donner à chaque pays le droit d'écraser les fichiers des      │
+# │ autres.                                                                    │
+# │                                                                            │
+# │ Conséquence pour le consommateur : `Insights360/` ne contient QUE des      │
+# │ dossiers. Il doit descendre dans chacun — en suivant la pagination à       │
+# │ chaque niveau — et écarter ceux qui ne sont pas des dossiers de dépôt      │
+# │ (`modeles/`).                                                              │
+# └────────────────────────────────────────────────────────────────────────────┘
+#: Les dossiers, du plus haut au plus profond, avec leur date de création —
+#: fixe, comme tout le jeu. Tous précèdent le premier fichier qu'ils reçoivent.
 DOSSIERS: tuple[tuple[str, str], ...] = (
     (DOSSIER, "2025-12-15T09:55:00Z"),
     (f"{DOSSIER}/{SOUS_DOSSIER}", "2025-12-15T10:00:00Z"),
+    (f"{DOSSIER}/NTE", "2025-12-15T10:10:00Z"),
+    (f"{DOSSIER}/BOG", "2025-12-15T10:11:00Z"),
+    (f"{DOSSIER}/MTL", "2025-12-15T10:12:00Z"),
+    (f"{DOSSIER}/{DOSSIER_TAUX}", "2025-12-15T10:13:00Z"),
 )
+
+
+def chemin_balance(code: str, mois: str) -> str:
+    """`Insights360/<CODE>/balance_<CODE>_<AAAA-MM>.xlsx` — depuis la racine."""
+    return f"{DOSSIER}/{code}/balance_{code}_{mois}.xlsx"
+
+
+CHEMIN_TAUX = f"{DOSSIER}/{DOSSIER_TAUX}/taux_2026.xlsx"
 
 
 def construire_jeu_par_defaut() -> list[Fichier]:
@@ -598,7 +627,7 @@ def construire_jeu_par_defaut() -> list[Fichier]:
     """
     fichiers = [
         Fichier(
-            chemin=f"{DOSSIER}/balance_{code}_{mois}.xlsx",
+            chemin=chemin_balance(code, mois),
             contenu=classeur_balance(code, mois, depot_de_la_balance(code, mois)),
             cree=iso(depot_de_la_balance(code, mois)),
             modifie=iso(depot_de_la_balance(code, mois)),
@@ -612,7 +641,7 @@ def construire_jeu_par_defaut() -> list[Fichier]:
     taux_modifie = _instant("2026-07-03T09:30:00Z")
     fichiers.append(
         Fichier(
-            chemin=f"{DOSSIER}/taux_2026.xlsx",
+            chemin=CHEMIN_TAUX,
             contenu=classeur_taux(taux_modifie),
             cree="2026-01-05T09:00:00Z",
             modifie=iso(taux_modifie),
@@ -794,8 +823,8 @@ FIXTURES: tuple[Fixture, ...] = (
     ),
     Fixture(
         "balance_NTE_2026-06_corrigee.xlsx",
-        "aucun — juin re-déposé corrigé (+250,00 € de loyer), à déposer SOUS le nom "
-        "balance_NTE_2026-06.xlsx pour éprouver l'écrasement",
+        "aucun — juin re-déposé corrigé (+250,00 € de loyer), à déposer SOUS le chemin "
+        "Insights360/NTE/balance_NTE_2026-06.xlsx pour éprouver l'écrasement",
         _corrigee,
         valide=True,
     ),

@@ -30,11 +30,15 @@ from entra_mock.dataset import depot_finance as jeu
 
 SITE = "/v1.0/sites/boreal-conseil.sharepoint.com:/sites/depot-finance"
 DRIVE = drive_module.DRIVE_ID
+#: `Insights360/` ne contient QUE des dossiers : un par entité, un pour les
+#: taux, et `modeles` — les pays déposent eux-mêmes, avec des droits par dossier.
 DOSSIER = f"/v1.0/drives/{DRIVE}/root:/Insights360:/children"
-NOMS_PAR_DEFAUT = {
-    *(f"balance_{code}_{mois}.xlsx" for code in ("NTE", "BOG", "MTL") for mois in jeu.MOIS),
-    "taux_2026.xlsx",
-    "modeles",
+DOSSIER_NTE = f"/v1.0/drives/{DRIVE}/root:/Insights360/NTE:/children"
+DOSSIERS_PAR_DEFAUT = ["BOG", "modeles", "MTL", "NTE", "TAUX"]  # dans l'ordre servi
+FICHIERS_PAR_DEFAUT = {
+    *(f"{code}/balance_{code}_{mois}.xlsx" for code in ("NTE", "BOG", "MTL") for mois in jeu.MOIS),
+    "TAUX/taux_2026.xlsx",
+    "modeles/modele_balance.xlsx",
 }
 
 
@@ -63,10 +67,41 @@ def tous_les_enfants(client, auth, url: str = DOSSIER) -> list[dict[str, Any]]:
     return elements
 
 
-def element(client, auth, nom: str) -> dict[str, Any]:
-    reponse = client.get(f"/v1.0/drives/{DRIVE}/root:/Insights360/{nom}", headers=auth)
+def tout_l_arbre(client, auth, select: str = "") -> dict[str, dict[str, Any]]:
+    """L'arborescence sous `Insights360/`, chemin relatif → élément.
+
+    Le parcours que le consommateur doit faire : descendre dans CHAQUE dossier
+    (par identifiant), en suivant la pagination à CHAQUE niveau.
+    """
+    suffixe = f"?$select={select}" if select else ""
+    arbre: dict[str, dict[str, Any]] = {}
+    a_visiter = [("", DOSSIER)]
+    while a_visiter:
+        prefixe, url = a_visiter.pop()
+        for item in tous_les_enfants(client, auth, url + suffixe):
+            chemin = prefixe + item["name"]
+            arbre[chemin] = item
+            if "folder" in item:
+                enfants = f"/v1.0/drives/{DRIVE}/items/{item['id']}/children"
+                a_visiter.append((f"{chemin}/", enfants))
+    return arbre
+
+
+def element(client, auth, chemin: str) -> dict[str, Any]:
+    """Un élément par son chemin SOUS `Insights360/` — `NTE/balance_NTE_2026-01.xlsx`."""
+    reponse = client.get(f"/v1.0/drives/{DRIVE}/root:/Insights360/{chemin}", headers=auth)
     assert reponse.status_code == 200, reponse.text
     return dict(reponse.json())
+
+
+def pages(client, auth, url: str) -> list[list[str]]:
+    """Les noms, PAGE par page, en suivant le curseur."""
+    rendu: list[list[str]] = []
+    while url:
+        corps = client.get(_relatif(url), headers=auth).json()
+        rendu.append([e["name"] for e in corps["value"]])
+        url = corps.get("@odata.nextLink", "")
+    return rendu
 
 
 def telecharger(client, auth, item_id: str) -> bytes:
@@ -139,7 +174,7 @@ def test_sans_droit_sur_le_site_403_accessDenied_PARTOUT(client, auth, monkeypat
         SITE,
         f"/v1.0/sites/{drive_module.SITE_ID}/drive",
         DOSSIER,
-        f"/v1.0/drives/{DRIVE}/root:/Insights360/taux_2026.xlsx:/content",
+        f"/v1.0/drives/{DRIVE}/root:/Insights360/TAUX/taux_2026.xlsx:/content",
     ):
         r = client.get(url, headers=auth, follow_redirects=False)
         assert r.status_code == 403, url
@@ -172,29 +207,82 @@ def test_la_bibliotheque_par_defaut_et_la_liste(client, auth):
 # ── Les enfants du dossier ───────────────────────────────────────────────────
 
 
-def test_children_PAGINE_par_curseur_opaque(client, auth):
-    """Deux par page : un client qui ignore `@odata.nextLink` ne voit que
-    `balance_BOG_2026-01` et `-02` — sans la moindre erreur."""
-    premiere = client.get(DOSSIER, headers=auth).json()
+def test_insights360_ne_contient_QUE_des_dossiers(client, auth):
+    """Un dossier par entité, un pour les taux, et `modeles` — rien d'autre.
+
+    Cinq dossiers, deux par page : trois pages. `modeles` tombe ENTRE `BOG` et
+    `MTL` — un consommateur doit l'écarter en cours de flux.
+    """
+    assert pages(client, auth, DOSSIER) == [["BOG", "modeles"], ["MTL", "NTE"], ["TAUX"]]
+    for item in tous_les_enfants(client, auth):
+        assert "folder" in item and "file" not in item, item["name"]
+
+
+def test_un_dossier_pays_PAGINE_par_curseur_opaque(client, auth):
+    """Six balances, deux par page : un client qui ignore `@odata.nextLink`
+    ne voit que janvier et février — sans la moindre erreur."""
+    premiere = client.get(DOSSIER_NTE, headers=auth).json()
     assert len(premiere["value"]) == 2
     suivant = premiere["@odata.nextLink"]
     assert suivant.startswith("http://testserver/v1.0/drives/")
     jeton = parse_qs(urlsplit(suivant).query)["$skiptoken"][0]
     assert not jeton.isdigit(), "le curseur doit être OPAQUE, pas un rang"
 
-    tous = tous_les_enfants(client, auth)
-    noms = [e["name"] for e in tous]
-    assert len(noms) == len(set(noms)) == 20
-    assert set(noms) == NOMS_PAR_DEFAUT
+    attendu = [
+        [f"balance_NTE_2026-0{m}.xlsx", f"balance_NTE_2026-0{m + 1}.xlsx"] for m in (1, 3, 5)
+    ]
+    assert pages(client, auth, DOSSIER_NTE) == attendu
+
+
+def test_par_chemin_et_par_identifiant_la_meme_pagination(client, auth):
+    """`root:/Insights360/BOG:/children` et `items/{id}/children` : mêmes pages,
+    et chaque lien suivant garde la forme de la requête."""
+    bog = element(client, auth, "BOG")
+    par_chemin = f"/v1.0/drives/{DRIVE}/root:/Insights360/BOG:/children"
+    par_id = f"/v1.0/drives/{DRIVE}/items/{bog['id']}/children"
+    assert pages(client, auth, par_chemin) == pages(client, auth, par_id)
+    assert len(pages(client, auth, par_id)) == 3
+    assert (
+        "/root:/Insights360/BOG:/children?"
+        in client.get(par_chemin, headers=auth).json()["@odata.nextLink"]
+    )
+    assert (
+        f"/items/{bog['id']}/children?"
+        in client.get(par_id, headers=auth).json()["@odata.nextLink"]
+    )
+
+
+def test_tout_l_arbre_par_defaut(client, auth):
+    arbre = tout_l_arbre(client, auth)
+    assert {c for c, e in arbre.items() if "file" in e} == FICHIERS_PAR_DEFAUT
+    assert {c for c, e in arbre.items() if "folder" in e} == set(DOSSIERS_PAR_DEFAUT)
+    assert {e["name"]: e["folder"]["childCount"] for e in tous_les_enfants(client, auth)} == {
+        "BOG": 6,
+        "MTL": 6,
+        "NTE": 6,
+        "TAUX": 1,
+        "modeles": 1,
+    }
+
+
+def test_chaque_pays_est_le_deposant_de_ses_fichiers(client, auth):
+    """Les pays déposent EUX-MÊMES : `createdBy` d'une balance de Bogota est
+    une personne de Bogota — de la donnée personnelle, comme ailleurs."""
+    for chemin, item in tout_l_arbre(client, auth).items():
+        dossier = chemin.partition("/")[0]
+        if "file" in item and dossier in jeu.DEPOSITAIRES:
+            nom, courriel = jeu.DEPOSITAIRES[dossier]
+            assert item["createdBy"]["user"]["email"] == courriel, chemin
+            assert item["lastModifiedBy"]["user"]["displayName"] == nom, chemin
 
 
 def test_top_est_un_plafond_pas_une_promesse(client, auth):
     """`$top=500` ne court-circuite PAS la pagination : le serveur rend moins."""
-    grande = client.get(f"{DOSSIER}?$top=500", headers=auth).json()
+    grande = client.get(f"{DOSSIER_NTE}?$top=500", headers=auth).json()
     assert len(grande["value"]) == 2
     assert "$top=500" in grande["@odata.nextLink"]
-    assert len(client.get(f"{DOSSIER}?$top=1", headers=auth).json()["value"]) == 1
-    assert client.get(f"{DOSSIER}?$top=zero", headers=auth).status_code == 400
+    assert len(client.get(f"{DOSSIER_NTE}?$top=1", headers=auth).json()["value"]) == 1
+    assert client.get(f"{DOSSIER_NTE}?$top=zero", headers=auth).status_code == 400
 
 
 def test_un_curseur_illisible_400(client, auth):
@@ -205,13 +293,13 @@ def test_le_select_MINIMISE_et_suit_le_lien(client, auth):
     """`$select` rend EXACTEMENT les propriétés demandées — pas d'`id` offert,
     pas de personne — et il est recopié dans le lien suivant."""
     demande = "id,name,size,cTag,lastModifiedDateTime,file,folder"
-    tous = tous_les_enfants(client, auth, f"{DOSSIER}?$select={demande}")
-    assert len(tous) == 20
-    for item in tous:
+    arbre = tout_l_arbre(client, auth, demande)
+    assert len(arbre) == len(FICHIERS_PAR_DEFAUT) + len(DOSSIERS_PAR_DEFAUT)
+    for item in arbre.values():
         assert set(item) <= set(demande.split(",")), item
         assert "createdBy" not in item and "lastModifiedBy" not in item
     # Sans `id` demandé, pas d'`id` rendu.
-    seul = client.get(f"{DOSSIER}?$select=name", headers=auth).json()
+    seul = client.get(f"{DOSSIER_NTE}?$select=name", headers=auth).json()
     assert all(set(item) == {"name"} for item in seul["value"])
 
 
@@ -223,7 +311,7 @@ def test_un_select_inconnu_400(client, auth):
 
 def test_sans_select_le_jeu_par_defaut_expose_une_PERSONNE(client, auth):
     """Le défaut que `$select` existe pour éviter : nom et courriel du déposant."""
-    item = client.get(DOSSIER, headers=auth).json()["value"][0]
+    item = client.get(DOSSIER_NTE, headers=auth).json()["value"][0]
     for cle in ("createdBy", "lastModifiedBy"):
         personne = item[cle]["user"]
         assert personne["displayName"]
@@ -236,9 +324,9 @@ def test_sans_select_le_jeu_par_defaut_expose_une_PERSONNE(client, auth):
 def test_SEUL_quickXorHash_jamais_sha(client, auth):
     """SharePoint ne calcule ni sha1 ni sha256 : un consommateur qui en lit un
     tombe sur une clé absente, ici comme en production."""
-    for item in tous_les_enfants(client, auth):
-        if item["name"] == "modeles":
-            assert item["folder"]["childCount"] == 1
+    for item in tout_l_arbre(client, auth).values():
+        if "folder" in item:
+            assert item["folder"]["childCount"] >= 1
             assert "file" not in item
             continue
         assert set(item["file"]["hashes"]) == {"quickXorHash"}
@@ -247,12 +335,12 @@ def test_SEUL_quickXorHash_jamais_sha(client, auth):
 
 
 def test_etag_et_ctag_ont_la_forme_de_sharepoint(client, auth):
-    item = element(client, auth, "balance_NTE_2026-01.xlsx")
+    item = element(client, auth, "NTE/balance_NTE_2026-01.xlsx")
     assert re.fullmatch(r'"\{[0-9A-F-]{36}\},1"', item["eTag"])
     assert re.fullmatch(r'"c:\{[0-9A-F-]{36}\},1"', item["cTag"])
     assert item["eTag"][2:38] == item["cTag"][4:40]
     # Le fichier des taux a été complété six fois : `n` n'est pas toujours 1.
-    assert element(client, auth, "taux_2026.xlsx")["cTag"].endswith(',6"')
+    assert element(client, auth, "TAUX/taux_2026.xlsx")["cTag"].endswith(',6"')
 
 
 def test_le_sous_dossier_est_un_dossier_que_l_on_peut_lister(client, auth):
@@ -263,7 +351,7 @@ def test_le_sous_dossier_est_un_dossier_que_l_on_peut_lister(client, auth):
 
 
 def test_element_par_identifiant_egal_element_par_chemin(client, auth):
-    par_chemin = element(client, auth, "balance_MTL_2026-03.xlsx")
+    par_chemin = element(client, auth, "MTL/balance_MTL_2026-03.xlsx")
     par_id = client.get(f"/v1.0/drives/{DRIVE}/items/{par_chemin['id']}", headers=auth).json()
     for cle in ("id", "name", "size", "eTag", "cTag", "file", "lastModifiedDateTime"):
         assert par_id[cle] == par_chemin[cle]
@@ -272,7 +360,10 @@ def test_element_par_identifiant_egal_element_par_chemin(client, auth):
 
 def test_la_casse_du_chemin_est_indifferente(client, auth):
     assert (
-        client.get(DOSSIER.replace("Insights360", "insights360"), headers=auth).status_code == 200
+        client.get(
+            DOSSIER_NTE.replace("Insights360/NTE", "insights360/nte"), headers=auth
+        ).status_code
+        == 200
     )
 
 
@@ -291,7 +382,7 @@ def test_dossier_inconnu_404_itemNotFound(client, auth):
 
 
 def test_content_rend_302_vers_une_url_pre_authentifiee(client, auth):
-    item = element(client, auth, "balance_NTE_2026-01.xlsx")
+    item = element(client, auth, "NTE/balance_NTE_2026-01.xlsx")
     r = client.get(
         f"/v1.0/drives/{DRIVE}/items/{item['id']}/content", headers=auth, follow_redirects=False
     )
@@ -311,7 +402,7 @@ def test_content_rend_302_vers_une_url_pre_authentifiee(client, auth):
 
 def test_content_par_chemin_aussi(client, auth):
     r = client.get(
-        f"/v1.0/drives/{DRIVE}/root:/Insights360/taux_2026.xlsx:/content",
+        f"/v1.0/drives/{DRIVE}/root:/Insights360/TAUX/taux_2026.xlsx:/content",
         headers=auth,
         follow_redirects=False,
     )
@@ -321,7 +412,7 @@ def test_content_par_chemin_aussi(client, auth):
 def test_renvoyer_le_Bearer_a_l_url_de_telechargement_401(client, auth):
     """LA faute : l'autorisation est DANS l'URL. Le jeton Graph n'a rien à y
     faire — un client qui le renvoie est refusé."""
-    item = element(client, auth, "balance_NTE_2026-01.xlsx")
+    item = element(client, auth, "NTE/balance_NTE_2026-01.xlsx")
     r = client.get(
         f"/v1.0/drives/{DRIVE}/items/{item['id']}/content", headers=auth, follow_redirects=False
     )
@@ -332,7 +423,7 @@ def test_renvoyer_le_Bearer_a_l_url_de_telechargement_401(client, auth):
 
 
 def test_tempauth_falsifie_ou_expire_401(client, auth, monkeypatch):
-    item = element(client, auth, "balance_NTE_2026-01.xlsx")
+    item = element(client, auth, "NTE/balance_NTE_2026-01.xlsx")
     url = item["@microsoft.graph.downloadUrl"]
     assert client.get(url).status_code == 200
     jeton = parse_qs(urlsplit(url).query)["tempauth"][0]
@@ -340,12 +431,12 @@ def test_tempauth_falsifie_ou_expire_401(client, auth, monkeypatch):
     assert client.get(falsifie).status_code == 401
     assert client.get(url.replace(jeton, "inconnu")).status_code == 401
     # Un tempauth valide pour un AUTRE fichier ne l'ouvre pas.
-    autre = element(client, auth, "balance_NTE_2026-02.xlsx")["@microsoft.graph.downloadUrl"]
+    autre = element(client, auth, "NTE/balance_NTE_2026-02.xlsx")["@microsoft.graph.downloadUrl"]
     jeton_autre = parse_qs(urlsplit(autre).query)["tempauth"][0]
     assert client.get(url.replace(jeton, jeton_autre)).status_code == 401
 
     monkeypatch.setattr(drive_module, "TEMPAUTH_SECONDS", -1)
-    expire = element(client, auth, "balance_NTE_2026-01.xlsx")["@microsoft.graph.downloadUrl"]
+    expire = element(client, auth, "NTE/balance_NTE_2026-01.xlsx")["@microsoft.graph.downloadUrl"]
     assert client.get(expire).status_code == 401
 
 
@@ -363,7 +454,7 @@ def test_quick_xor_hash_vecteurs_de_reference():
 
 
 def test_le_quickXorHash_servi_est_celui_des_octets(client, auth):
-    item = element(client, auth, "taux_2026.xlsx")
+    item = element(client, auth, "TAUX/taux_2026.xlsx")
     octets = telecharger(client, auth, item["id"])
     assert item["file"]["hashes"]["quickXorHash"] == drive_module.quick_xor_hash(octets)
     assert len(base64.b64decode(item["file"]["hashes"]["quickXorHash"])) == 20
@@ -388,11 +479,11 @@ def test_ecraser_GARDE_l_id_et_avance_ctag_etag_et_l_horloge(client, auth):
     `eTag` et `cTag`, `lastModifiedDateTime` avance — sur l'horloge du mock,
     pas l'horloge murale, pour que l'instantané du consommateur reste stable.
     """
-    avant = element(client, auth, "balance_NTE_2026-06.xlsx")
+    avant = element(client, auth, "NTE/balance_NTE_2026-06.xlsx")
     corrigee = client.get("/__fixtures/depot_finance/balance_NTE_2026-06_corrigee.xlsx").content
-    r = deposer(client, "Insights360/balance_NTE_2026-06.xlsx", corrigee)
+    r = deposer(client, "Insights360/NTE/balance_NTE_2026-06.xlsx", corrigee)
     assert r.status_code == 200, r.text
-    apres = element(client, auth, "balance_NTE_2026-06.xlsx")
+    apres = element(client, auth, "NTE/balance_NTE_2026-06.xlsx")
 
     assert apres["id"] == avant["id"]
     assert apres["cTag"] == avant["cTag"].replace(",1", ",2")
@@ -406,12 +497,38 @@ def test_ecraser_GARDE_l_id_et_avance_ctag_etag_et_l_horloge(client, auth):
 
 def test_deposer_un_nouveau_fichier_201(client, auth):
     juillet = client.get("/__fixtures/depot_finance/balance_NTE_2026-07.xlsx").content
-    r = deposer(client, "Insights360/balance_NTE_2026-07.xlsx", juillet)
+    r = deposer(client, "Insights360/NTE/balance_NTE_2026-07.xlsx", juillet)
     assert r.status_code == 201, r.text
     assert r.json()["cTag"].endswith(',1"')
     assert r.json()["lastModifiedBy"]["user"]["displayName"] == "Claire Rousseau"
-    noms = {e["name"] for e in tous_les_enfants(client, auth)}
-    assert noms == NOMS_PAR_DEFAUT | {"balance_NTE_2026-07.xlsx"}
+    noms = {e["name"] for e in tous_les_enfants(client, auth, DOSSIER_NTE)}
+    assert noms == {f"balance_NTE_{m}.xlsx" for m in (*jeu.MOIS, "2026-07")}
+    assert element(client, auth, "NTE")["folder"]["childCount"] == 7
+
+
+def test_deposer_dans_un_NOUVEAU_dossier_pays_le_cree(client, auth):
+    """Un pays qui n'a pas encore de dossier : le dépôt le crée au passage —
+    daté sur l'horloge du mock, AVANT le fichier qu'il reçoit."""
+    contenu = client.get("/__fixtures/depot_finance/balance_XXX_2026-07.xlsx").content
+    r = deposer(client, "Insights360/XXX/balance_XXX_2026-07.xlsx", contenu)
+    assert r.status_code == 201, r.text
+    assert r.json()["lastModifiedDateTime"] == "2026-07-15T08:02:00Z"
+    assert r.json()["parentReference"]["path"].endswith("/root:/Insights360/XXX")
+
+    assert [e["name"] for e in tous_les_enfants(client, auth)] == [*DOSSIERS_PAR_DEFAUT, "XXX"]
+    dossier = element(client, auth, "XXX")
+    assert dossier["createdDateTime"] == "2026-07-15T08:01:00Z"
+    assert dossier["folder"]["childCount"] == 1
+    enfants = tous_les_enfants(client, auth, f"/v1.0/drives/{DRIVE}/items/{dossier['id']}/children")
+    assert [e["name"] for e in enfants] == ["balance_XXX_2026-07.xlsx"]
+    assert telecharger(client, auth, enfants[0]["id"]) == contenu
+
+
+def test_le_deposant_d_un_depot_est_le_pays_du_dossier(client):
+    r = deposer(client, "Insights360/BOG/balance_BOG_2026-07.xlsx", b"x")
+    assert r.json()["createdBy"]["user"]["displayName"] == "Camila Restrepo"
+    r = deposer(client, "Insights360/MTL/notes.csv", b"x")
+    assert r.json()["createdBy"]["user"]["displayName"] == "Émilie Tremblay"
 
 
 def test_l_horloge_du_mock_est_deterministe(client):
@@ -430,34 +547,34 @@ def test_l_horloge_du_mock_est_deterministe(client):
 
 
 def test_supprimer_puis_redeposer_donne_un_NOUVEL_element(client, auth):
-    avant = element(client, auth, "balance_BOG_2026-01.xlsx")
+    avant = element(client, auth, "BOG/balance_BOG_2026-01.xlsx")
     assert (
         client.delete(
-            "/__admin/drive/files/Insights360/balance_BOG_2026-01.xlsx", headers=ADMIN
+            "/__admin/drive/files/Insights360/BOG/balance_BOG_2026-01.xlsx", headers=ADMIN
         ).status_code
         == 204
     )
     assert client.get(f"/v1.0/drives/{DRIVE}/items/{avant['id']}", headers=auth).status_code == 404
-    assert "balance_BOG_2026-01.xlsx" not in {e["name"] for e in tous_les_enfants(client, auth)}
+    assert "BOG/balance_BOG_2026-01.xlsx" not in tout_l_arbre(client, auth)
     assert (
         client.delete(
-            "/__admin/drive/files/Insights360/balance_BOG_2026-01.xlsx", headers=ADMIN
+            "/__admin/drive/files/Insights360/BOG/balance_BOG_2026-01.xlsx", headers=ADMIN
         ).status_code
         == 404
     )
 
-    contenu = telecharger(client, auth, element(client, auth, "balance_BOG_2026-02.xlsx")["id"])
-    assert deposer(client, "Insights360/balance_BOG_2026-01.xlsx", contenu).status_code == 201
-    assert element(client, auth, "balance_BOG_2026-01.xlsx")["id"] != avant["id"]
+    contenu = telecharger(client, auth, element(client, auth, "BOG/balance_BOG_2026-02.xlsx")["id"])
+    assert deposer(client, "Insights360/BOG/balance_BOG_2026-01.xlsx", contenu).status_code == 201
+    assert element(client, auth, "BOG/balance_BOG_2026-01.xlsx")["id"] != avant["id"]
 
 
 def test_reset_du_lecteur_rend_le_jeu_par_defaut(client, auth):
-    avant = {e["name"]: e["cTag"] for e in tous_les_enfants(client, auth)}
-    deposer(client, "Insights360/balance_NTE_2026-06.xlsx", b"autre")
-    deposer(client, "Insights360/notes.csv", b"x")
-    client.delete("/__admin/drive/files/Insights360/taux_2026.xlsx", headers=ADMIN)
+    avant = {c: (e["id"], e["cTag"]) for c, e in tout_l_arbre(client, auth).items()}
+    deposer(client, "Insights360/NTE/balance_NTE_2026-06.xlsx", b"autre")
+    deposer(client, "Insights360/XXX/notes.csv", b"x")
+    client.delete("/__admin/drive/files/Insights360/TAUX", headers=ADMIN)
     assert client.post("/__admin/drive/reset", headers=ADMIN).status_code == 200
-    assert {e["name"]: e["cTag"] for e in tous_les_enfants(client, auth)} == avant
+    assert {c: (e["id"], e["cTag"]) for c, e in tout_l_arbre(client, auth).items()} == avant
 
 
 def test_les_noms_que_sharepoint_refuse_sont_refuses(client):
@@ -465,6 +582,7 @@ def test_les_noms_que_sharepoint_refuse_sont_refuses(client):
     assert deposer(client, "Insights360/a_vti_b.xlsx", b"x").status_code == 400
     assert deposer(client, "Insights360/ espace.xlsx", b"x").status_code == 400
     assert deposer(client, "Insights360/modeles", b"x").status_code == 409
+    assert deposer(client, "Insights360/NTE", b"x").status_code == 409
 
 
 def test_les_compteurs_ne_retiennent_que_les_appels_servis(client, auth):
@@ -472,7 +590,7 @@ def test_les_compteurs_ne_retiennent_que_les_appels_servis(client, auth):
     rien : les compteurs, pas le contenu des tables."""
     client.post("/__admin/drive/reset", headers=ADMIN)
     client.get(DOSSIER)  # 401 : non compté
-    item = client.get(f"{DOSSIER}?$select=id,name", headers=auth).json()["value"][0]
+    item = client.get(f"{DOSSIER_NTE}?$select=id,name", headers=auth).json()["value"][0]
     telecharger(client, auth, item["id"])
     compteurs = client.get("/__admin/drive/counters", headers=ADMIN).json()
     assert compteurs["children"] == 1
@@ -501,8 +619,8 @@ ROUTES_GRAPH = [
     f"/v1.0/drives/{DRIVE}/root",
     f"/v1.0/drives/{DRIVE}/root/children",
     DOSSIER,
-    f"/v1.0/drives/{DRIVE}/root:/Insights360/taux_2026.xlsx",
-    f"/v1.0/drives/{DRIVE}/root:/Insights360/taux_2026.xlsx:/content",
+    f"/v1.0/drives/{DRIVE}/root:/Insights360/TAUX/taux_2026.xlsx",
+    f"/v1.0/drives/{DRIVE}/root:/Insights360/TAUX/taux_2026.xlsx:/content",
     f"/v1.0/drives/{DRIVE}/items/01QUELCONQUE",
     f"/v1.0/drives/{DRIVE}/items/01QUELCONQUE/children",
     f"/v1.0/drives/{DRIVE}/items/01QUELCONQUE/content",
@@ -607,15 +725,20 @@ def defauts(nom: str, contenu: bytes) -> set[str]:
 
 def test_chaque_balance_servie_est_valide_equilibree_et_sans_prefixe(client, auth):
     """Les 18 balances et le fichier des taux, tels qu'un consommateur les
-    obtient : listés en suivant le curseur, téléchargés par la redirection."""
+    obtient : listés dossier par dossier en suivant le curseur, téléchargés par
+    la redirection — chacun dans le dossier de SON entité."""
     vus: set[tuple[str, str]] = set()
-    for item in tous_les_enfants(client, auth):
-        if "folder" in item:
+    for chemin, item in tout_l_arbre(client, auth).items():
+        dossier = chemin.partition("/")[0]
+        if "folder" in item or dossier == "modeles":
             continue
         contenu = telecharger(client, auth, item["id"])
-        assert defauts(item["name"], contenu) == set(), item["name"]
+        assert defauts(item["name"], contenu) == set(), chemin
         if correspondance := _MOTIF_BALANCE.fullmatch(item["name"]):
+            assert dossier == correspondance[1], chemin
             vus.add((correspondance[1], correspondance[2]))
+        else:
+            assert dossier == "TAUX", chemin
     assert vus == {(code, mois) for code in ("NTE", "BOG", "MTL") for mois in jeu.MOIS}
 
 
@@ -645,7 +768,7 @@ def test_l_intragroupe_se_repond_a_l_arrondi_de_change_pres():
 
 
 def test_le_fichier_des_taux(client, auth):
-    contenu = telecharger(client, auth, element(client, auth, "taux_2026.xlsx")["id"])
+    contenu = telecharger(client, auth, element(client, auth, "TAUX/taux_2026.xlsx")["id"])
     rangees = list(load_workbook(BytesIO(contenu))["taux"].iter_rows(values_only=True))
     assert rangees[0] == ("type_taux", "periode", "devise", "devise_pour_1_eur")
     moyens = [r for r in rangees[1:] if r[0] == "moyen"]
@@ -729,7 +852,7 @@ def test_la_formule_n_a_pas_de_valeur_en_cache(client):
 
 def test_aucune_variante_invalide_dans_le_dossier_par_defaut(client, auth):
     """Elles rendraient rouge la CI du consommateur : on les dépose à la main."""
-    noms = {e["name"] for e in tous_les_enfants(client, auth)}
+    noms = {e["name"] for e in tout_l_arbre(client, auth).values()}
     assert not noms & set(ATTENDUS)
     assert client.get("/__fixtures/depot_finance/inconnue.xlsx").status_code == 404
 

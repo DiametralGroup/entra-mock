@@ -140,7 +140,7 @@ would have its own token, and let through a client that asks for two.
 | # | Behaviour | What a kinder mock would hide |
 |---|---|---|
 | 1 | An app on **`Sites.Selected`** with no grant on *that* site gets **403 `accessDenied`** (`{"error":{"code":"accessDenied","message":"Access denied","innerError":{…}}}`) — on the site and everything in it. `ENTRA_MOCK_SITE_GRANT=none`, or `POST /__admin/drive/grant {"grant":"none"}` at runtime | the first-deployment failure, which must be diagnosed as "ask for the grant", not "renew the token" (401) or "fix the path" (404) |
-| 2 | `/children` **paginates** with an opaque `$skiptoken` (keyset on the last name, SharePoint-style). **Two items per page** by default; `$top` is a ceiling, never a promise | a client that ignores `@odata.nextLink` sees `balance_BOG_2026-01` and `-02`, and nothing else — silently |
+| 2 | `/children` **paginates** with an opaque `$skiptoken` (keyset on the last name, SharePoint-style). **Two items per page** by default; `$top` is a ceiling, never a promise | a client that ignores `@odata.nextLink` sees the `BOG` and `modeles` folders, or January and February of a country — and nothing else, silently |
 | 3 | Without `$select`, every item carries **`createdBy` / `lastModifiedBy` with a person** (display name, email) | a client that forgets `$select` collects personal data in production. With `$select`, the mock returns **exactly** the selected properties — no implicit `id`: ask for it |
 | 4 | Files carry **only `quickXorHash`** — SharePoint / OneDrive for Business never serve `sha1Hash` / `sha256Hash`. The hash is the real algorithm (checked against reference vectors) | a client comparing sha256 finds a missing key in production |
 | 5 | `/content` answers **302** to an absolute, **pre-authenticated** URL (`tempauth`, valid `ENTRA_MOCK_TEMPAUTH_SECONDS`). That URL **refuses a request that carries an `Authorization` header** (401) | a client that forwards its Graph bearer to another host |
@@ -162,10 +162,30 @@ children. Downloads are not throttled.
 ### The dataset — built from code at startup
 
 Site `boreal-conseil.sharepoint.com` / `/sites/depot-finance` ("Dépôt
-Finance"), default library **Documents**, folder **`Insights360`**, whose
-direct children are:
+Finance"), default library **Documents**, folder **`Insights360`** — which
+holds **only folders**, one per entity plus one for the rates:
 
-- `balance_<CODE>_<YYYY-MM>.xlsx` for `NTE`, `BOG`, `MTL` × `2026-01`…`2026-06`
+```
+Insights360/
+├── BOG/      balance_BOG_2026-01.xlsx … balance_BOG_2026-06.xlsx   (6)
+├── modeles/  modele_balance.xlsx                                   (not a drop folder)
+├── MTL/      balance_MTL_2026-01.xlsx … balance_MTL_2026-06.xlsx   (6)
+├── NTE/      balance_NTE_2026-01.xlsx … balance_NTE_2026-06.xlsx   (6)
+└── TAUX/     taux_2026.xlsx                                        (version 6)
+```
+
+**Why one folder per entity:** the countries drop their files **themselves**,
+and SharePoint write permissions are set **per folder** — Bogota writes in
+`BOG/` and nowhere else, group Finance owns `TAUX/`. A single shared folder
+would mean giving every country the right to overwrite the others' files.
+For the consumer, it means walking the tree: list `Insights360/` (five
+folders, three pages), then each drop folder (six files, three pages),
+following `@odata.nextLink` at **every** level, and skipping folders that are
+not drop folders (`modeles/`, sorted *between* `BOG` and `MTL`, so it shows up
+mid-stream). Every file is created and last modified by a person of its own
+country (`createdBy` / `lastModifiedBy`).
+
+- `<CODE>/balance_<CODE>_<YYYY-MM>.xlsx` for `NTE`, `BOG`, `MTL` × `2026-01`…`2026-06`
   (18 files). One sheet `balance`, header **exactly**
   `entite | mois | compte | libelle_compte | debit | credit | devise`; `compte`
   and `mois` are text; `debit` / `credit` are numbers ≥ 0 rounded to the cent,
@@ -175,14 +195,12 @@ direct children are:
   only**, no account a strict prefix of another. Revenue on the credit side,
   costs on the debit side. Seeded, deterministic values: revenue ≈ 150k EUR
   (NTE), ≈ 400M COP (BOG), ≈ 120k CAD (MTL) per month;
-- `taux_2026.xlsx`: one sheet `taux`, header
+- `TAUX/taux_2026.xlsx`: one sheet `taux`, header
   `type_taux | periode | devise | devise_pour_1_eur` — `moyen` rows for
   `2026-01`…`2026-06` for `CAD` (1.45–1.52) and `COP` (4400–4700), `budget`
   rows for period `2026` (text). Units of currency for **1 EUR**; **no EUR
   row**;
-- a sub-folder **`modeles`** holding `modele_balance.xlsx` — consumers must
-  ignore sub-folders. It sorts *between* the balances and the rate file, so it
-  shows up mid-stream, not first.
+- `modeles/modele_balance.xlsx` — a template, to be ignored.
 
 Intercompany flows are coherent: what BOG (`413595`) and MTL (`4090`) invoice
 NTE is what NTE books in `604800`, and NTE's management fees (`706800`) are
@@ -221,8 +239,11 @@ They are **not** in the default folder (they would turn the consumer's CI
 red). They are served, **without authentication** (synthetic test data,
 useful without the control plane too), at
 `GET /__fixtures/depot_finance/{name}`; `GET /__fixtures/depot_finance` lists
-them with their defect. A test downloads one and drops it with
-`PUT /__admin/drive/files/Insights360/{name}`. **One defect per variant, and
+them with their defect. A test downloads one and drops it in the right
+folder with `PUT /__admin/drive/files/Insights360/<CODE>/{name}` (e.g.
+`Insights360/BOG/balance_BOG_2026-07_desequilibree.xlsx`); a folder that does
+not exist yet — a new country, `Insights360/XXX/` — is created on the way.
+**One defect per variant, and
 only one** — a consumer test expecting "rejected as unbalanced" must not pass
 because the file was *also* rejected for its header.
 
@@ -238,7 +259,7 @@ because the file was *also* rejected for its header.
 | `~$balance_NTE_2026-01.xlsx` | invalid | Excel owner/lock file: 165 bytes, not a workbook. Microsoft documents `~$` names as invalid in SharePoint/OneDrive; the control plane accepts it anyway, so the consumer's filter can be exercised |
 | `notes.csv` | invalid | outside the naming convention |
 | `balance_NTE_2026-07.xlsx` | **valid** | one more month — to accept (incremental drop) |
-| `balance_NTE_2026-06_corrigee.xlsx` | **valid** | June re-issued with a +250.00 EUR rent correction — drop it **as** `balance_NTE_2026-06.xlsx` to exercise an overwrite |
+| `balance_NTE_2026-06_corrigee.xlsx` | **valid** | June re-issued with a +250.00 EUR rent correction — drop it **as** `Insights360/NTE/balance_NTE_2026-06.xlsx` to exercise an overwrite |
 
 The list lives in one place: `FIXTURES` in `src/entra_mock/dataset/depot_finance.py`.
 
@@ -250,7 +271,7 @@ Same mechanics as the other mocks of the ecosystem: mounted **only** when
 
 | Endpoint | Effect |
 |---|---|
-| `PUT /__admin/drive/files/{path}` | raw body = file bytes, `{path}` from the drive root (`Insights360/…`); **201** on create, **200** on overwrite — same item `id`, `eTag`/`cTag` `n+1`, new `lastModifiedDateTime`; missing folders are created; returns the driveItem |
+| `PUT /__admin/drive/files/{path}` | raw body = file bytes, `{path}` from the drive root (`Insights360/NTE/…`); **201** on create, **200** on overwrite — same item `id`, `eTag`/`cTag` `n+1`, new `lastModifiedDateTime`; missing folders are created (a new country folder too), each stamped on the mock clock; the depositor is the country the file name or its folder names; returns the driveItem |
 | `DELETE /__admin/drive/files/{path}` | 204 (a folder goes with its content), 404 if absent. Re-dropping a deleted path yields a **new** item id, as in SharePoint |
 | `POST /__admin/drive/reset` | back to the default dataset, counters and clock included |
 | `GET /__admin/drive/counters` | `{site, drive, drives, item, children, content, download}` — authenticated, non-throttled calls since the last reset: proves that an idempotent second run downloads nothing |
@@ -307,7 +328,7 @@ A release is a tag `vX.Y.Z` on `main`: CI tests, smoke-tests and pushes
 
 | Version | Dataset |
 |---|---|
-| `0.5.0` | same directory, plus the **SharePoint drive** surface and the `depot-finance` site (18 trial balances, the FX-rate file, invalid variants), the `/__admin` control plane — the current one |
+| `0.5.0` | same directory, plus the **SharePoint drive** surface and the `depot-finance` site (one folder per entity with 6 trial balances each, a `TAUX` folder, invalid variants), the `/__admin` control plane — the current one |
 | `0.4.0` | `grp-comex` renamed `grp-bi-comex`, the tenant's real name (breaking for a consumer keyed on the old name) |
 | `0.3.0` | same UPNs, plus `grp-bi-imbrique` (a nested group + a service principal, no direct membership) and `/transitiveMembers`. Faithful to six dialect facts the mock used to get wrong |
 | `0.2.0` | UPNs of boondmanager-mock's **`realiste`** dataset (`@boreal-conseil.example`) |

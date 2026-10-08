@@ -208,11 +208,16 @@ def _identite(code: str) -> dict[str, str]:
     }
 
 
-def _depositaire(nom: str) -> str:
+def _depositaire(chemin: str) -> str:
     """Le déposant d'un fichier écrit par le plan de contrôle : l'entité que
-    nomme le fichier si elle est connue, la Finance de Nantes sinon."""
+    nomme le fichier, à défaut celle dont c'est le dossier, à défaut la Finance
+    du groupe (Nantes) — qui tient `TAUX/` et les dossiers inconnus."""
+    dossier, _, nom = chemin.rpartition("/")
     morceaux = nom.split("_")
-    return morceaux[1] if len(morceaux) > 2 and morceaux[1] in jeu.DEPOSITAIRES else "NTE"
+    if len(morceaux) > 2 and morceaux[1] in jeu.DEPOSITAIRES:
+        return morceaux[1]
+    parent = dossier.rpartition("/")[2]
+    return parent if parent in jeu.DEPOSITAIRES else "NTE"
 
 
 class Depot:
@@ -296,8 +301,8 @@ class Depot:
         return next((e for e in self.elements.values() if e.unique_id == unique_id), None)
 
     def enfants(self, dossier: Element) -> list[Element]:
-        """Les enfants DIRECTS, triés par nom — le sous-dossier `modeles` tombe
-        donc au milieu des fichiers, pas en tête : un consommateur doit
+        """Les enfants DIRECTS, triés par nom — sous `Insights360/`, `modeles`
+        tombe donc ENTRE `BOG` et `MTL`, pas en tête : un consommateur doit
         l'écarter en cours de flux, pas en sautant la première ligne."""
         if not dossier.dossier:
             return []
@@ -333,7 +338,7 @@ class Depot:
                 self._remplir(existant, contenu)
                 existant.version += 1
                 existant.modifie = self.instant()
-                existant.modificateur = _identite(_depositaire(existant.nom))
+                existant.modificateur = _identite(_depositaire(existant.chemin))
                 return existant, False
             morceaux = chemin.split("/")
             for profondeur in range(1, len(morceaux)):
@@ -344,7 +349,7 @@ class Depot:
                 elif not dossier.dossier:
                     raise NotADirectoryError(parent)
             instant = self.instant()
-            auteur = _identite(_depositaire(morceaux[-1]))
+            auteur = _identite(_depositaire(chemin))
             return self._creer(chemin, contenu, instant, instant, auteur), True
 
     def retirer(self, chemin: str) -> bool:
@@ -779,8 +784,8 @@ def _servir_contenu(request: Request, element: Element) -> Response:
 
 
 def _decouper(chemin: str) -> tuple[str, str]:
-    """`Insights360:/children` → (`Insights360`, `children`) ;
-    `Insights360/a.xlsx:` → (`Insights360/a.xlsx`, ``)."""
+    """`Insights360/NTE:/children` → (`Insights360/NTE`, `children`) ;
+    `Insights360/NTE/a.xlsx:` → (`Insights360/NTE/a.xlsx`, ``)."""
     if ":/" in chemin:
         cible, _, segment = chemin.rpartition(":/")
         return cible, segment.strip("/")
@@ -824,11 +829,11 @@ def enfants_de_la_racine(drive_id: str, request: Request) -> Response:
 def par_chemin(drive_id: str, chemin: str, request: Request) -> Response:
     """L'adressage PAR CHEMIN, sous ses trois formes :
 
-    • `root:/Insights360:/children` — les enfants d'un dossier, PAGINÉS
+    • `root:/Insights360/NTE:/children` — les enfants d'un dossier, PAGINÉS
       (`@odata.nextLink`, `$skiptoken` opaque), `$select` honoré ;
-    • `root:/Insights360/balance_NTE_2026-01.xlsx` (deux-points final
+    • `root:/Insights360/NTE/balance_NTE_2026-01.xlsx` (deux-points final
       facultatif) — un élément ;
-    • `root:/Insights360/balance_NTE_2026-01.xlsx:/content` — 302 vers l'URL
+    • `root:/Insights360/NTE/balance_NTE_2026-01.xlsx:/content` — 302 vers l'URL
       de téléchargement.
 
     La casse du chemin est indifférente, comme dans SharePoint.

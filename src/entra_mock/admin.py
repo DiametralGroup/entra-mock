@@ -59,7 +59,9 @@ async def deposer(
 ) -> Response:
     """Dépose un fichier — le corps BRUT est son contenu.
 
-    Le chemin part de la RACINE du lecteur : `Insights360/balance_NTE_2026-07.xlsx`.
+    Le chemin part de la RACINE du lecteur : `Insights360/NTE/balance_NTE_2026-07.xlsx`.
+    Un dossier qui n'existe pas encore — un nouveau pays, `Insights360/XXX/` —
+    est créé au passage.
     201 à la création, 200 à l'écrasement — qui garde l'identifiant, passe le
     `n` de `eTag`/`cTag` à n+1 et avance `lastModifiedDateTime` d'une minute
     sur l'horloge du mock (jamais l'horloge murale : cf. `drive.py`).
