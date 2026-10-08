@@ -43,6 +43,11 @@ jonction des deux sources —
 
   • `ext.consultant@boreal-conseil.example` : dans un groupe, ABSENT du SIRH ;
   • `kevin.silva@boreal-conseil.example`     : au SIRH, dans AUCUN groupe.
+
+Depuis 0.5.0, le mock sert aussi la surface « fichiers » de Graph (driveItem :
+un site, sa bibliothèque par défaut, VIDE au démarrage). Elle vit dans
+`drive.py` et passe par le MÊME préambule (`_refus`) ; le plan de contrôle
+`/__admin`, qui la remplit, vit dans `admin.py`.
 """
 
 from __future__ import annotations
@@ -98,6 +103,15 @@ GROUPS_PAGE_SIZE = int(os.environ.get("ENTRA_MOCK_GROUPS_PAGE_SIZE", "2"))
 # └────────────────────────────────────────────────────────────────────────────┘
 THROTTLE_EVERY = int(os.environ.get("ENTRA_MOCK_THROTTLE_EVERY", "0"))
 RETRY_AFTER = os.environ.get("ENTRA_MOCK_RETRY_AFTER", "1")
+
+# Plan de contrôle /__admin. Fermé par défaut : il n'a de sens qu'en test — et
+# fermé veut dire NON MONTÉ.
+ADMIN_ENABLED = os.environ.get("ENTRA_MOCK_ADMIN_ENABLED", "false").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
 
 
 def _d(upn: str) -> str:
@@ -324,11 +338,17 @@ def _groupe_rendu(group_id: str) -> dict[str, Any]:
     }
 
 
-app = FastAPI(title="Microsoft Graph mock (Entra groups)", version="0.3.0")
+app = FastAPI(title="Microsoft Graph mock (Entra groups, drive files)", version="0.5.0")
 
 #: Compteur d'appels Graph authentifiés — sert UNIQUEMENT à l'étranglement
 #: déterministe. Un mock mono-processus : pas de course à craindre.
 _appels = 0
+
+
+def reinitialiser_appels() -> None:
+    """Remet la cadence de l'étranglement à zéro — `POST /__admin/reset`."""
+    global _appels  # noqa: PLW0603 — un compteur de mock, mono-processus
+    _appels = 0
 
 
 def _erreur_graph(status: int, code: str, message: str) -> JSONResponse:
@@ -648,16 +668,38 @@ def _servir_membres(group_id: str, request: Request, *, transitif: bool) -> JSON
     return JSONResponse(corps)
 
 
-def _lien_suivant(request: Request, chemin: str, curseur: int) -> str:
+def _lien_suivant(request: Request, chemin: str, curseur: int | str) -> str:
     """Le lien suivant, en RECOPIANT les paramètres — comme Graph.
 
     Graph reporte `$select` (et les autres options) dans le `@odata.nextLink`.
     Un mock qui ne le ferait pas rendrait la deuxième page plus large que la
     première, et masquerait un client qui repasse ses paramètres à la main —
     lequel écraserait alors le curseur et boucherait sur la première page.
+
+    Le curseur est un rang pour les groupes, un jeton opaque pour un dossier
+    (`drive.py`) ; `$top`, quand il a été donné, suit le même chemin.
     """
     base = str(request.base_url).rstrip("/")
     parametres = [f"$skiptoken={curseur}"]
-    if select := request.query_params.get("$select"):
-        parametres.append(f"$select={select}")
+    for option in ("$select", "$top"):
+        if valeur := request.query_params.get(option):
+            parametres.append(f"{option}={valeur}")
     return f"{base}{chemin}?" + "&".join(parametres)
+
+
+# ── La surface « fichiers », et le plan de contrôle ──────────────────────────
+#
+# Importés EN FIN de module, et c'est voulu : `drive.py` réutilise `_refus`,
+# `_erreur_graph`, `_projeter` et `_lien_suivant` ci-dessus — le même jeton, le
+# même étranglement, la même enveloppe d'erreur que l'annuaire. Les dupliquer
+# laisserait les deux surfaces diverger au premier correctif.
+from .drive import routeur as routeur_drive  # noqa: E402
+
+app.include_router(routeur_drive)
+
+# Le plan de contrôle n'est pas « monté puis interdit » : quand il est
+# désactivé, la surface n'existe pas.
+if ADMIN_ENABLED:
+    from .admin import router as routeur_admin
+
+    app.include_router(routeur_admin)

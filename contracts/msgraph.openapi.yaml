@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
-  title: Microsoft Graph mock (Entra groups)
-  version: 0.3.0
+  title: Microsoft Graph mock (Entra groups, drive files)
+  version: 0.5.0
 paths:
   /health:
     get:
@@ -128,6 +128,436 @@ paths:
           content:
             application/json:
               schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /v1.0/sites/{hostname}:/{server_relative_path}:
+    get:
+      summary: Site Par Chemin
+      description: 'Le site par son CHEMIN — `/sites/{hôte}:/{chemin relatif au serveur}`.
+
+
+        C''est l''adressage qu''un client configure (un hôte et un chemin lisibles),
+
+        et il en tire l''identifiant COMPOSITE du site pour la suite. Le
+
+        deux-points final optionnel (`…:/sites/documents:`) est accepté, comme
+
+        chez Graph.'
+      operationId: site_par_chemin_v1_0_sites__hostname____server_relative_path__get
+      parameters:
+      - name: hostname
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Hostname
+      - name: server_relative_path
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Server Relative Path
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '401':
+          description: '`InvalidAuthenticationToken` — Bearer absent, expiré, autre
+            audience'
+        '403':
+          description: '`accessDenied` — aucun rôle `Sites.Selected` accordé sur le
+            site'
+        '404':
+          description: '`itemNotFound`'
+        '429':
+          description: '`TooManyRequests` + `Retry-After` (injectable)'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /v1.0/sites/{site_id}:
+    get:
+      summary: Site
+      description: Le site par son identifiant composite.
+      operationId: site_v1_0_sites__site_id__get
+      parameters:
+      - name: site_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Site Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '401':
+          description: '`InvalidAuthenticationToken` — Bearer absent, expiré, autre
+            audience'
+        '403':
+          description: '`accessDenied` — aucun rôle `Sites.Selected` accordé sur le
+            site'
+        '404':
+          description: '`itemNotFound`'
+        '429':
+          description: '`TooManyRequests` + `Retry-After` (injectable)'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /v1.0/sites/{site_id}/drive:
+    get:
+      summary: Lecteur Par Defaut
+      description: La bibliothèque PAR DÉFAUT du site — « Documents ».
+      operationId: lecteur_par_defaut_v1_0_sites__site_id__drive_get
+      parameters:
+      - name: site_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Site Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '401':
+          description: '`InvalidAuthenticationToken` — Bearer absent, expiré, autre
+            audience'
+        '403':
+          description: '`accessDenied` — aucun rôle `Sites.Selected` accordé sur le
+            site'
+        '404':
+          description: '`itemNotFound`'
+        '429':
+          description: '`TooManyRequests` + `Retry-After` (injectable)'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /v1.0/sites/{site_id}/drives:
+    get:
+      summary: Lecteurs
+      description: Les bibliothèques du site, en collection `value[]`.
+      operationId: lecteurs_v1_0_sites__site_id__drives_get
+      parameters:
+      - name: site_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Site Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '401':
+          description: '`InvalidAuthenticationToken` — Bearer absent, expiré, autre
+            audience'
+        '403':
+          description: '`accessDenied` — aucun rôle `Sites.Selected` accordé sur le
+            site'
+        '404':
+          description: '`itemNotFound`'
+        '429':
+          description: '`TooManyRequests` + `Retry-After` (injectable)'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /v1.0/drives/{drive_id}:
+    get:
+      summary: Lecteur
+      description: Un lecteur par son identifiant `b!…`.
+      operationId: lecteur_v1_0_drives__drive_id__get
+      parameters:
+      - name: drive_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Drive Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '401':
+          description: '`InvalidAuthenticationToken` — Bearer absent, expiré, autre
+            audience'
+        '403':
+          description: '`accessDenied` — aucun rôle `Sites.Selected` accordé sur le
+            site'
+        '404':
+          description: '`itemNotFound`'
+        '429':
+          description: '`TooManyRequests` + `Retry-After` (injectable)'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /v1.0/drives/{drive_id}/root:
+    get:
+      summary: Racine
+      description: La racine du lecteur.
+      operationId: racine_v1_0_drives__drive_id__root_get
+      parameters:
+      - name: drive_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Drive Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '401':
+          description: '`InvalidAuthenticationToken` — Bearer absent, expiré, autre
+            audience'
+        '403':
+          description: '`accessDenied` — aucun rôle `Sites.Selected` accordé sur le
+            site'
+        '404':
+          description: '`itemNotFound`'
+        '429':
+          description: '`TooManyRequests` + `Retry-After` (injectable)'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /v1.0/drives/{drive_id}/root/children:
+    get:
+      summary: Enfants De La Racine
+      description: Les enfants de la racine — vides tant que rien n'a été écrit.
+      operationId: enfants_de_la_racine_v1_0_drives__drive_id__root_children_get
+      parameters:
+      - name: drive_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Drive Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '401':
+          description: '`InvalidAuthenticationToken` — Bearer absent, expiré, autre
+            audience'
+        '403':
+          description: '`accessDenied` — aucun rôle `Sites.Selected` accordé sur le
+            site'
+        '404':
+          description: '`itemNotFound`'
+        '429':
+          description: '`TooManyRequests` + `Retry-After` (injectable)'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /v1.0/drives/{drive_id}/root:/{chemin}:
+    get:
+      summary: Par Chemin
+      description: "L'adressage PAR CHEMIN, sous ses trois formes :\n\n• `root:/reports:/children`\
+        \ — les enfants d'un dossier, PAGINÉS\n  (`@odata.nextLink`, `$skiptoken`\
+        \ opaque), `$select` honoré ;\n• `root:/reports/report-1.txt` (deux-points\
+        \ final facultatif) — un\n  élément ;\n• `root:/reports/report-1.txt:/content`\
+        \ — 302 vers l'URL de\n  téléchargement.\n\nLa casse du chemin est indifférente."
+      operationId: par_chemin_v1_0_drives__drive_id__root___chemin__get
+      parameters:
+      - name: drive_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Drive Id
+      - name: chemin
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Chemin
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '401':
+          description: '`InvalidAuthenticationToken` — Bearer absent, expiré, autre
+            audience'
+        '403':
+          description: '`accessDenied` — aucun rôle `Sites.Selected` accordé sur le
+            site'
+        '404':
+          description: '`itemNotFound`'
+        '429':
+          description: '`TooManyRequests` + `Retry-After` (injectable)'
+        '302':
+          description: 'Redirection vers une URL de téléchargement PRÉ-AUTHENTIFIÉE
+            (`Location`, `tempauth` à durée limitée). À suivre SANS en-tête Authorization
+            : l''URL rend 401 si on lui en présente un.'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /v1.0/drives/{drive_id}/items/{item_id}:
+    get:
+      summary: Element Par Identifiant
+      description: Un élément par son identifiant `01…`.
+      operationId: element_par_identifiant_v1_0_drives__drive_id__items__item_id__get
+      parameters:
+      - name: drive_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Drive Id
+      - name: item_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Item Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '401':
+          description: '`InvalidAuthenticationToken` — Bearer absent, expiré, autre
+            audience'
+        '403':
+          description: '`accessDenied` — aucun rôle `Sites.Selected` accordé sur le
+            site'
+        '404':
+          description: '`itemNotFound`'
+        '429':
+          description: '`TooManyRequests` + `Retry-After` (injectable)'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /v1.0/drives/{drive_id}/items/{item_id}/children:
+    get:
+      summary: Enfants Par Identifiant
+      description: Les enfants d'un dossier désigné par son identifiant — même pagination.
+      operationId: enfants_par_identifiant_v1_0_drives__drive_id__items__item_id__children_get
+      parameters:
+      - name: drive_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Drive Id
+      - name: item_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Item Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '401':
+          description: '`InvalidAuthenticationToken` — Bearer absent, expiré, autre
+            audience'
+        '403':
+          description: '`accessDenied` — aucun rôle `Sites.Selected` accordé sur le
+            site'
+        '404':
+          description: '`itemNotFound`'
+        '429':
+          description: '`TooManyRequests` + `Retry-After` (injectable)'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /v1.0/drives/{drive_id}/items/{item_id}/content:
+    get:
+      summary: Contenu
+      description: 'Le contenu d''un fichier : 302 vers une URL PRÉ-AUTHENTIFIÉE.
+
+
+        C''est ce que Graph rend, et il faut le suivre SANS le Bearer — l''URL porte
+
+        sa propre autorisation (`tempauth`), limitée dans le temps.'
+      operationId: contenu_v1_0_drives__drive_id__items__item_id__content_get
+      parameters:
+      - name: drive_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Drive Id
+      - name: item_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Item Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '401':
+          description: '`InvalidAuthenticationToken` — Bearer absent, expiré, autre
+            audience'
+        '403':
+          description: '`accessDenied` — aucun rôle `Sites.Selected` accordé sur le
+            site'
+        '404':
+          description: '`itemNotFound`'
+        '429':
+          description: '`TooManyRequests` + `Retry-After` (injectable)'
+        '302':
+          description: 'Redirection vers une URL de téléchargement PRÉ-AUTHENTIFIÉE
+            (`Location`, `tempauth` à durée limitée). À suivre SANS en-tête Authorization
+            : l''URL rend 401 si on lui en présente un.'
         '422':
           description: Validation Error
           content:

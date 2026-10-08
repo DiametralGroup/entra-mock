@@ -13,16 +13,24 @@
 #       http://localhost:8011/00000000-0000-0000-0000-000000000000/oauth2/v2.0/token \
 #       | python3 -c 'import json,sys; print(json.load(sys.stdin)["access_token"])')
 #     curl -H "Authorization: Bearer $TOKEN" http://localhost:8011/v1.0/groups
+#     curl -H "Authorization: Bearer $TOKEN" \
+#       'http://localhost:8011/v1.0/sites/contoso.sharepoint.com:/sites/documents'
 #
 # The healthcheck ships INSIDE the image, so consumers can rely on
 # `depends_on: condition: service_healthy`.
 services:
   entra-mock:
     build: .
-    image: entra-mock:0.3.0
+    image: entra-mock:0.5.0
     ports:
       - "8011:8000"
     environment:
       # Page size 1 by default (see README): every group with more than one
       # member is paginated, so the @odata.nextLink path is always exercised.
       ENTRA_MOCK_PAGE_SIZE: "1"
+      # Two items per page on a drive folder, for the same reason.
+      ENTRA_MOCK_DRIVE_PAGE_SIZE: "2"
+      # The /__admin control plane (write, overwrite, delete files; counters).
+      # Off by default — and off means NOT MOUNTED.
+      ENTRA_MOCK_ADMIN_ENABLED: "true"
+      ENTRA_MOCK_ADMIN_TOKEN: "mock-admin-token"
