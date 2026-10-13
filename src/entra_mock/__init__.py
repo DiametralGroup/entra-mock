@@ -1,11 +1,11 @@
-"""Mock Microsoft Graph — appartenance aux groupes Entra.
+"""Mock Microsoft Graph -- Entra group membership.
 
-N'est PAS une source BoondManager : autre authentification (OAuth2 client
-credentials), autre enveloppe (`value[]` + `@odata.nextLink`), autre contrat.
-Cf. docs/SPEC-DEVIATIONS.md #4.
+NOT a BoondManager source: different authentication (OAuth2 client
+credentials), different envelope (`value[]` + `@odata.nextLink`), different
+contract. See docs/SPEC-DEVIATIONS.md #4.
 
-Depuis 0.5.0, il sert aussi la surface « fichiers » de Graph (driveItem) —
-un site, sa bibliothèque par défaut, vide au démarrage (cf. `drive.py`).
+Since 0.5.0, it also serves the Graph "files" surface (driveItem) -- a site,
+its default library, empty at startup (see `drive.py`).
 """
 
 from .app import app

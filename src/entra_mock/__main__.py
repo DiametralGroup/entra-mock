@@ -1,4 +1,4 @@
-"""Point d'entrée conteneur : `python -m entra_mock`."""
+"""Container entrypoint: `python -m entra_mock`."""
 
 from __future__ import annotations
 

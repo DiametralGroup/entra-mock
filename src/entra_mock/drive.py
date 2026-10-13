@@ -1,27 +1,27 @@
-"""Mock Microsoft Graph — la surface « fichiers » (driveItem).
+"""Mock Microsoft Graph -- the "files" surface (driveItem).
 
-Un site, sa bibliothèque par défaut (« Documents »), et rien dedans : le
-lecteur est VIDE au démarrage. Un test le remplit par le plan de contrôle
-(`PUT /__admin/drive/files/{chemin}`, cf. `admin.py`) avec les fichiers dont
-il a besoin — le mock n'embarque aucun jeu de fichiers.
+A site, its default library ("Documents"), and nothing in it: the drive is
+EMPTY at startup. A test fills it through the control plane
+(`PUT /__admin/drive/files/{path}`, see `admin.py`) with the files it needs --
+the mock ships no file dataset.
 
-┌─ CE QUE LE VRAI GRAPH FAIT, ET QU'UN MOCK GENTIL CACHERAIT ─────────────────┐
-│ 1. une application en `Sites.Selected` sans droit sur LE site reçoit 403    │
-│    `accessDenied`, sur le site comme sur tout ce qu'il contient —           │
-│    `ENTRA_MOCK_SITE_GRANT=none` le reproduit ;                              │
-│ 2. `/children` PAGINE, par curseur `$skiptoken` opaque — deux par page ici, │
-│    pour que le chemin de pagination soit exercé par construction ;          │
-│ 3. sans `$select`, chaque élément porte `createdBy`/`lastModifiedBy` : un   │
-│    nom et un courriel — un client qui n'en a pas besoin doit le DIRE ;      │
-│ 4. les bibliothèques de documents ne servent QUE `quickXorHash` — jamais    │
-│    `sha1Hash` ni `sha256Hash` ;                                             │
-│ 5. `/content` rend 302 vers une URL PRÉ-AUTHENTIFIÉE. Y renvoyer le Bearer  │
-│    est une faute : 401 ici.                                                 │
+┌─ WHAT THE REAL GRAPH DOES, AND A NICE MOCK WOULD HIDE ──────────────────────┐
+│ 1. an application in `Sites.Selected` without a grant on THE site gets 403  │
+│    `accessDenied`, on the site as on everything it contains --              │
+│    `ENTRA_MOCK_SITE_GRANT=none` reproduces it;                              │
+│ 2. `/children` PAGINATES, by an opaque `$skiptoken` cursor -- two per page   │
+│    here, so the pagination path is exercised by construction;              │
+│ 3. without `$select`, each item carries `createdBy`/`lastModifiedBy`: a     │
+│    name and an email -- a client that doesn't need it must SAY so;         │
+│ 4. document libraries serve ONLY `quickXorHash` -- never `sha1Hash` nor     │
+│    `sha256Hash`;                                                            │
+│ 5. `/content` returns a 302 to a PRE-AUTHENTICATED URL. Forwarding the      │
+│    Bearer there is a mistake: 401 here.                                    │
 └─────────────────────────────────────────────────────────────────────────────┘
 
-Chaque route Graph passe par `_refus` (jeton, puis étranglement) — le MÊME
-préambule que `/v1.0/groups` : un 429 injecté frappe les fichiers comme
-l'annuaire.
+Every Graph route goes through `_denied` (token, then throttling) -- the SAME
+preamble as `/v1.0/groups`: an injected 429 hits the files surface just as it
+does the directory.
 """
 
 from __future__ import annotations
@@ -44,96 +44,96 @@ from urllib.parse import parse_qs, quote, urlencode
 from fastapi import APIRouter, Request, Response
 from fastapi.responses import JSONResponse, RedirectResponse
 
-from .app import _erreur_graph, _lien_suivant, _projeter, _refus, _SelectInconnu
+from .app import _denied, _graph_error, _next_link, _project, _UnknownSelect
 
-# ┌─ LE SITE SERVI ────────────────────────────────────────────────────────────┐
-# │ Un hôte et un chemin relatif au serveur — l'adressage qu'un client         │
-# │ configure. Les deux sont réglables, pour coller à la configuration du      │
-# │ client testé sans toucher au mock.                                         │
+# ┌─ THE SITE SERVED ───────────────────────────────────────────────────────────┐
+# │ A host and a server-relative path -- the addressing a client configures.   │
+# │ Both are configurable, to match the tested client's configuration without  │
+# │ touching the mock.                                                        │
 # └────────────────────────────────────────────────────────────────────────────┘
 SITE_HOSTNAME = os.environ.get("ENTRA_MOCK_SITE_HOSTNAME", "contoso.sharepoint.com").lower()
 SITE_PATH = "/" + os.environ.get("ENTRA_MOCK_SITE_PATH", "/sites/documents").strip("/")
 
-# ┌─ LE DROIT DE L'APPLICATION SUR LE SITE ────────────────────────────────────┐
-# │ Une application en `Sites.Selected` ne voit RIEN tant qu'un administrateur │
-# │ ne lui a pas accordé un rôle sur le site précis. Sans ce geste, Graph rend │
-# │ 403 `accessDenied` — le jeton est valide, c'est le site qui est fermé.     │
-# │ C'est LA panne de première mise en service, et elle doit se distinguer     │
-# │ d'un 401 (jeton) comme d'un 404 (chemin) dans le diagnostic du client.     │
+# ┌─ THE APPLICATION'S GRANT ON THE SITE ──────────────────────────────────────┐
+# │ An application in `Sites.Selected` sees NOTHING until an administrator     │
+# │ has granted it a role on that specific site. Without that gesture, Graph   │
+# │ returns 403 `accessDenied` -- the token is valid, it's the site that's     │
+# │ closed. This is THE go-live failure, and it must be distinguishable from   │
+# │ a 401 (token) and a 404 (path) in the client's diagnostic.                 │
 # └────────────────────────────────────────────────────────────────────────────┘
 SITE_GRANT = os.environ.get("ENTRA_MOCK_SITE_GRANT", "read")
 
-# Deux par page, pour la même raison qu'un membre par page sur les groupes :
-# Graph pagine `/children` (200 par page), et un dossier qui tiendrait en une
-# page rendrait invisible un client qui ne suit pas `@odata.nextLink`.
+# Two per page, for the same reason as one member per page on groups: Graph
+# paginates `/children` (200 per page), and a folder that fit in one page
+# would make a client not following `@odata.nextLink` invisible.
 DRIVE_PAGE_SIZE = int(os.environ.get("ENTRA_MOCK_DRIVE_PAGE_SIZE", "2"))
 
-#: Durée de vie d'une URL de téléchargement pré-authentifiée.
+#: Lifetime of a pre-authenticated download URL.
 TEMPAUTH_SECONDS = int(os.environ.get("ENTRA_MOCK_TEMPAUTH_SECONDS", "3600"))
 
-# ┌─ L'HÔTE DES URL DE TÉLÉCHARGEMENT ─────────────────────────────────────────┐
-# │ En production, la redirection QUITTE graph.microsoft.com pour l'hôte du    │
-# │ site. httpx comme requests retirent alors d'eux-mêmes l'en-tête            │
-# │ Authorization — c'est un changement d'origine. Le mock, lui, redirige vers │
-# │ LUI-MÊME : un client qui suit la redirection garde son Bearer, et reçoit   │
-# │ 401 là où la production aurait répondu.                                    │
+# ┌─ THE DOWNLOAD URL'S HOST ───────────────────────────────────────────────────┐
+# │ In production, the redirect LEAVES graph.microsoft.com for the site's      │
+# │ host. Both httpx and requests then strip the Authorization header on      │
+# │ their own -- that's an origin change. The mock, instead, redirects to      │
+# │ ITSELF: a client following the redirect keeps its Bearer, and gets 401     │
+# │ where production would have answered.                                     │
 # │                                                                            │
-# │ Défaut assumé : il impose au client de suivre la redirection à la main,    │
-# │ sans Authorization — ce qui marche partout. Pour reproduire le changement  │
-# │ d'origine, donner ici un second nom du même conteneur (alias réseau        │
-# │ compose, par exemple `http://files-mock:8000`).                            │
+# │ Assumed default: it forces the client to follow the redirect by hand,      │
+# │ without Authorization -- which works everywhere. To reproduce the origin   │
+# │ change, give it a second name of the same container here (e.g. a compose   │
+# │ network alias, `http://files-mock:8000`).                                  │
 # └────────────────────────────────────────────────────────────────────────────┘
 DOWNLOAD_BASE_URL = os.environ.get("ENTRA_MOCK_DOWNLOAD_BASE_URL", "").rstrip("/")
 
-BIBLIOTHEQUE = "Documents"
+LIBRARY = "Documents"
 
 
-def _guid(graine: str) -> uuid.UUID:
-    return uuid.uuid5(uuid.NAMESPACE_URL, f"https://{SITE_HOSTNAME}{SITE_PATH}#{graine}")
+def _guid(seed: str) -> uuid.UUID:
+    return uuid.uuid5(uuid.NAMESPACE_URL, f"https://{SITE_HOSTNAME}{SITE_PATH}#{seed}")
 
 
-# Les identifiants ont la FORME de ceux du vrai service, parce qu'un client
-# finit toujours par en loguer, en stocker ou en découper un :
-#   • site  : `<hôte>,<GUID de collection>,<GUID du web>` — un identifiant
-#             COMPOSITE, avec des virgules ;
-#   • drive : `b!` + base64url des trois GUID (collection, web, liste), dans
-#             l'ordre d'octets .NET — 66 caractères, `-` et `_` compris ;
-#   • item  : `01` + 32 caractères base32 majuscules.
-_COLLECTION, _WEB, _LISTE = _guid("collection"), _guid("web"), _guid("liste")
+# Identifiers have the SHAPE of the real service's, because a client always
+# ends up logging, storing or splitting one:
+#   • site  : `<host>,<collection GUID>,<web GUID>` -- a COMPOSITE identifier,
+#             with commas;
+#   • drive : `b!` + base64url of the three GUIDs (collection, web, list), in
+#             .NET byte order -- 66 characters, `-` and `_` included;
+#   • item  : `01` + 32 uppercase base32 characters.
+_COLLECTION, _WEB, _LIST = _guid("collection"), _guid("web"), _guid("list")
 SITE_ID = f"{SITE_HOSTNAME},{_COLLECTION},{_WEB}"
 DRIVE_ID = "b!" + base64.urlsafe_b64encode(
-    _COLLECTION.bytes_le + _WEB.bytes_le + _LISTE.bytes_le
+    _COLLECTION.bytes_le + _WEB.bytes_le + _LIST.bytes_le
 ).decode().rstrip("=")
-URL_SITE = f"https://{SITE_HOSTNAME}{SITE_PATH}"
-URL_BIBLIOTHEQUE = f"{URL_SITE}/Shared%20Documents"
-_CREATION_SITE = "2026-01-01T00:00:00Z"
+SITE_URL = f"https://{SITE_HOSTNAME}{SITE_PATH}"
+LIBRARY_URL = f"{SITE_URL}/Shared%20Documents"
+_SITE_CREATED = "2026-01-01T00:00:00Z"
 
-# ┌─ L'HORLOGE DU MOCK, ET POURQUOI CE N'EST PAS L'HORLOGE MURALE ─────────────┐
-# │ Une écriture par le plan de contrôle doit faire AVANCER                    │
-# │ `lastModifiedDateTime` — c'est ce qu'un client incrémental compare. Mais   │
-# │ l'heure murale rendrait chaque run différent du précédent, et un           │
-# │ instantané pris par le client ne serait plus jamais stable.                │
+# ┌─ THE MOCK'S CLOCK, AND WHY IT ISN'T THE WALL CLOCK ────────────────────────┐
+# │ A write through the control plane must make `lastModifiedDateTime`         │
+# │ ADVANCE -- that's what an incremental client compares. But the wall clock  │
+# │ would make each run different from the last, and a snapshot taken by the   │
+# │ client would never be stable again.                                       │
 # │                                                                            │
-# │ D'où une horloge MONOTONE et DÉTERMINISTE : une base fixe, plus une minute │
-# │ par écriture depuis la dernière remise à zéro. La même suite d'écritures   │
-# │ rend les mêmes horodatages.                                                │
+# │ Hence a MONOTONIC and DETERMINISTIC clock: a fixed base, plus one minute   │
+# │ per write since the last reset. The same sequence of writes yields the     │
+# │ same timestamps.                                                           │
 # └────────────────────────────────────────────────────────────────────────────┘
-_BASE_HORLOGE = datetime(2026, 1, 1, tzinfo=UTC)
+_CLOCK_BASE = datetime(2026, 1, 1, tzinfo=UTC)
 
-#: L'identité générique qui écrit les fichiers — aucune personne réelle.
-UTILISATEUR = {
+#: The generic identity that writes files -- no real person.
+USER = {
     "email": "user@example.invalid",
     "id": str(uuid.uuid5(uuid.NAMESPACE_DNS, "user@example.invalid")),
     "displayName": "Mock User",
 }
 
-#: Signe les `tempauth`. Tiré au démarrage : une URL émise par un autre
-#: processus est refusée, comme une URL d'un autre locataire.
+#: Signs `tempauth`. Drawn at startup: a URL issued by another process is
+#: refused, like a URL from another tenant.
 _SECRET = secrets.token_bytes(32)
 
-#: Le type MIME par extension — explicite, pour ne pas dépendre du
-#: `/etc/mime.types` de l'image (absent de `python:3.12-slim`).
-_TYPES_MIME = {
+#: The MIME type by extension -- explicit, so as not to depend on the
+#: image's `/etc/mime.types` (absent from `python:3.12-slim`).
+_MIME_TYPES = {
     ".txt": "text/plain",
     ".csv": "text/csv",
     ".json": "application/json",
@@ -142,344 +142,341 @@ _TYPES_MIME = {
     ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
 }
 
-#: Les caractères qu'un nom de fichier ne peut pas porter.
-_INTERDITS = frozenset('"*:<>?\\|')
+#: The characters a file name cannot carry.
+_FORBIDDEN_CHARS = frozenset('"*:<>?\\|')
 
 
 def _iso(instant: datetime) -> str:
     return instant.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def quick_xor_hash(donnees: bytes) -> str:
-    """Le `quickXorHash` de Microsoft — la SEULE empreinte servie ici.
+def quick_xor_hash(data: bytes) -> str:
+    """Microsoft's `quickXorHash` -- the ONLY hash served here.
 
-    Algorithme publié (OneDrive API, « QuickXorHash ») : chaque octet est XORé
-    dans un registre de 160 bits, décalé de 11 bits de plus que le précédent
-    (rotation modulo 160), puis la longueur sur 8 octets little-endian est
-    XORée dans les 8 derniers octets. Vérifié contre l'implémentation de
-    référence (paquet `quickxorhash`) — cf. tests.
+    Published algorithm (OneDrive API, "QuickXorHash"): each byte is XORed
+    into a 160-bit register, shifted 11 bits more than the previous one
+    (rotation modulo 160), then the 8-byte little-endian length is XORed into
+    the last 8 bytes. Verified against the reference implementation
+    (`quickxorhash` package) -- see tests.
 
-    Les octets aux positions i, i+160, i+320… reçoivent le même décalage
-    (160 * 11 ≡ 0 mod 160) : on les XORe d'abord, bloc par bloc, en entiers.
+    Bytes at positions i, i+160, i+320… receive the same shift
+    (160 * 11 ≡ 0 mod 160): they are XORed first, block by block, as
+    integers.
     """
-    largeur, decalage = 160, 11
-    masque = (1 << largeur) - 1
-    cumul = 0
-    for debut in range(0, len(donnees), largeur):
-        cumul ^= int.from_bytes(donnees[debut : debut + largeur], "little")
-    registre = 0
-    for position, octet in enumerate(cumul.to_bytes(largeur, "little")):
-        if octet:
-            valeur = octet << ((position * decalage) % largeur)
-            registre ^= (valeur & masque) | (valeur >> largeur)
-    resultat = bytearray(registre.to_bytes(largeur // 8, "little"))
-    for i, octet in enumerate(len(donnees).to_bytes(8, "little")):
-        resultat[largeur // 8 - 8 + i] ^= octet
-    return base64.b64encode(bytes(resultat)).decode()
+    width, shift = 160, 11
+    mask = (1 << width) - 1
+    acc = 0
+    for start in range(0, len(data), width):
+        acc ^= int.from_bytes(data[start : start + width], "little")
+    register = 0
+    for position, byte_ in enumerate(acc.to_bytes(width, "little")):
+        if byte_:
+            value = byte_ << ((position * shift) % width)
+            register ^= (value & mask) | (value >> width)
+    result = bytearray(register.to_bytes(width // 8, "little"))
+    for i, byte_ in enumerate(len(data).to_bytes(8, "little")):
+        result[width // 8 - 8 + i] ^= byte_
+    return base64.b64encode(bytes(result)).decode()
 
 
 @dataclass
 class Element:
-    """Un `driveItem` — dossier quand `contenu` est None."""
+    """A `driveItem` -- a folder when `content` is None."""
 
-    #: Depuis la racine du lecteur, casse d'origine ; "" pour la racine.
-    chemin: str
-    identifiant: str
+    #: From the drive's root, original casing; "" for the root.
+    path: str
+    item_id: str
     unique_id: str
-    #: L'ID d'élément de liste — il figure dans le `$skiptoken`.
-    numero: int
-    cree: str
-    modifie: str
-    auteur: dict[str, str]
-    modificateur: dict[str, str]
-    contenu: bytes | None = None
+    #: The list item id -- it figures in the `$skiptoken`.
+    number: int
+    created: str
+    modified: str
+    author: dict[str, str]
+    modifier: dict[str, str]
+    content: bytes | None = None
     version: int = 1
-    empreinte: str = ""
-    type_mime: str = ""
+    digest: str = ""
+    mime_type: str = ""
 
     @property
-    def nom(self) -> str:
-        return self.chemin.rpartition("/")[2] if self.chemin else "root"
+    def name(self) -> str:
+        return self.path.rpartition("/")[2] if self.path else "root"
 
     @property
     def parent(self) -> str:
-        return self.chemin.rpartition("/")[0]
+        return self.path.rpartition("/")[0]
 
     @property
-    def dossier(self) -> bool:
-        return self.contenu is None
+    def is_folder(self) -> bool:
+        return self.content is None
 
 
-def _cle(chemin: str) -> str:
-    """Les chemins ne distinguent pas la casse : `Reports` et `reports`
-    désignent le même dossier. Un mock sensible à la casse ferait échouer un
-    client correct."""
-    return "/".join(p for p in chemin.split("/") if p).casefold()
+def _key(path: str) -> str:
+    """Paths are case-insensitive: `Reports` and `reports` designate the
+    same folder. A case-sensitive mock would fail a correct client."""
+    return "/".join(p for p in path.split("/") if p).casefold()
 
 
-class Lecteur:
-    """L'état du lecteur — VIDE (la seule racine) après `reinitialiser()`."""
+class Drive:
+    """The drive's state -- EMPTY (the root alone) after `reset()`."""
 
     def __init__(self) -> None:
-        self.verrou = threading.RLock()
-        self.elements: dict[str, Element] = {}
-        self.compteurs: Counter[str] = Counter()
-        self.naissances: Counter[str] = Counter()
-        self.ecritures = 0
-        self.dernier_numero = 0
-        self.droit = SITE_GRANT
-        self.reinitialiser()
+        self.lock = threading.RLock()
+        self.items: dict[str, Element] = {}
+        self.counters: Counter[str] = Counter()
+        self.births: Counter[str] = Counter()
+        self.writes = 0
+        self.last_number = 0
+        self.grant = SITE_GRANT
+        self.reset()
 
-    def reinitialiser(self) -> None:
-        with self.verrou:
-            self.elements = {}
-            self.compteurs = Counter()
-            self.naissances = Counter()
-            self.ecritures = 0
-            self.dernier_numero = 0
-            # Relu à chaque remise à zéro : un test peut changer SITE_GRANT et
-            # retrouver l'état que l'environnement aurait produit au démarrage.
-            self.droit = SITE_GRANT
-            systeme = {"displayName": "System Account"}
-            self._creer("", None, _CREATION_SITE, _CREATION_SITE, systeme)
+    def reset(self) -> None:
+        with self.lock:
+            self.items = {}
+            self.counters = Counter()
+            self.births = Counter()
+            self.writes = 0
+            self.last_number = 0
+            # Reread on every reset: a test can change SITE_GRANT and get
+            # back the state the environment would have produced at startup.
+            self.grant = SITE_GRANT
+            system = {"displayName": "System Account"}
+            self._create("", None, _SITE_CREATED, _SITE_CREATED, system)
 
-    def _creer(
-        self, chemin: str, contenu: bytes | None, cree: str, modifie: str, auteur: dict[str, str]
+    def _create(
+        self, path: str, content: bytes | None, created: str, modified: str, author: dict[str, str]
     ) -> Element:
-        cle = _cle(chemin)
-        # Un fichier supprimé puis réécrit est un NOUVEL élément : nouvel
-        # identifiant. La naissance entre donc dans la graine — déterministe
-        # pour une même suite d'opérations.
-        graine = f"{cle}#{self.naissances[cle]}"
-        self.naissances[cle] += 1
-        self.dernier_numero += 1
-        empreinte = hashlib.sha1(graine.encode(), usedforsecurity=False).digest()
+        key = _key(path)
+        # A file deleted then rewritten is a NEW item: a new id. The birth
+        # count therefore enters the seed -- deterministic for the same
+        # sequence of operations.
+        seed = f"{key}#{self.births[key]}"
+        self.births[key] += 1
+        self.last_number += 1
+        digest = hashlib.sha1(seed.encode(), usedforsecurity=False).digest()
         element = Element(
-            chemin=chemin.strip("/"),
-            identifiant="01" + base64.b32encode(empreinte).decode()[:32],
-            unique_id=str(_guid(graine)),
-            numero=self.dernier_numero,
-            cree=cree,
-            modifie=modifie,
-            auteur=auteur,
-            modificateur=auteur,
+            path=path.strip("/"),
+            item_id="01" + base64.b32encode(digest).decode()[:32],
+            unique_id=str(_guid(seed)),
+            number=self.last_number,
+            created=created,
+            modified=modified,
+            author=author,
+            modifier=author,
         )
-        if contenu is not None:
-            self._remplir(element, contenu)
-        self.elements[cle] = element
+        if content is not None:
+            self._fill(element, content)
+        self.items[key] = element
         return element
 
     @staticmethod
-    def _remplir(element: Element, contenu: bytes) -> None:
-        element.contenu = contenu
-        element.empreinte = quick_xor_hash(contenu)
-        extension = "." + element.nom.rpartition(".")[2].lower() if "." in element.nom else ""
-        element.type_mime = _TYPES_MIME.get(extension, "application/octet-stream")
+    def _fill(element: Element, content: bytes) -> None:
+        element.content = content
+        element.digest = quick_xor_hash(content)
+        extension = "." + element.name.rpartition(".")[2].lower() if "." in element.name else ""
+        element.mime_type = _MIME_TYPES.get(extension, "application/octet-stream")
 
-    def instant(self) -> str:
-        self.ecritures += 1
-        return _iso(_BASE_HORLOGE + timedelta(minutes=self.ecritures))
+    def now(self) -> str:
+        self.writes += 1
+        return _iso(_CLOCK_BASE + timedelta(minutes=self.writes))
 
-    def racine(self) -> Element:
-        return self.elements[""]
+    def root(self) -> Element:
+        return self.items[""]
 
-    def trouver(self, chemin: str) -> Element | None:
-        return self.elements.get(_cle(chemin))
+    def find(self, path: str) -> Element | None:
+        return self.items.get(_key(path))
 
-    def par_identifiant(self, identifiant: str) -> Element | None:
-        return next((e for e in self.elements.values() if e.identifiant == identifiant), None)
+    def by_id(self, item_id: str) -> Element | None:
+        return next((e for e in self.items.values() if e.item_id == item_id), None)
 
-    def par_unique_id(self, unique_id: str) -> Element | None:
+    def by_unique_id(self, unique_id: str) -> Element | None:
         unique_id = unique_id.strip("{}").lower()
-        return next((e for e in self.elements.values() if e.unique_id == unique_id), None)
+        return next((e for e in self.items.values() if e.unique_id == unique_id), None)
 
-    def enfants(self, dossier: Element) -> list[Element]:
-        """Les enfants DIRECTS, triés par nom sans tenir compte de la casse."""
-        if not dossier.dossier:
+    def children(self, folder: Element) -> list[Element]:
+        """DIRECT children, sorted by name case-insensitively."""
+        if not folder.is_folder:
             return []
-        cle = _cle(dossier.chemin)
+        key = _key(folder.path)
         return sorted(
-            (e for e in self.elements.values() if e.chemin and _cle(e.parent) == cle),
-            key=lambda e: e.nom.casefold(),
+            (e for e in self.items.values() if e.path and _key(e.parent) == key),
+            key=lambda e: e.name.casefold(),
         )
 
-    def taille(self, element: Element) -> int:
-        if element.contenu is not None:
-            return len(element.contenu)
-        prefixe = _cle(element.chemin) + "/" if element.chemin else ""
+    def size(self, element: Element) -> int:
+        if element.content is not None:
+            return len(element.content)
+        prefix = _key(element.path) + "/" if element.path else ""
         return sum(
-            len(e.contenu)
-            for cle, e in self.elements.items()
-            if e.contenu is not None and cle.startswith(prefixe)
+            len(e.content)
+            for key, e in self.items.items()
+            if e.content is not None and key.startswith(prefix)
         )
 
-    def ecrire(
-        self, chemin: str, contenu: bytes, modifie: str | None = None
-    ) -> tuple[Element, bool]:
-        """Crée ou ÉCRASE un fichier.
+    def write(self, path: str, content: bytes, modified: str | None = None) -> tuple[Element, bool]:
+        """Creates or OVERWRITES a file.
 
-        L'écrasement GARDE l'identifiant (c'est le même élément), incrémente le
-        `n` de `eTag`/`cTag` et avance `lastModifiedDateTime` sur l'horloge du
-        mock. Les dossiers intermédiaires sont créés.
+        Overwriting KEEPS the id (it's the same item), bumps the `n` of
+        `eTag`/`cTag`, and advances `lastModifiedDateTime` on the mock's
+        clock. Intermediate folders are created.
 
-        `modifie` (ISO 8601 en UTC) remplace l'horloge du mock pour CE fichier :
-        un client qui raisonne sur la date d'un fichier — « ce mois était-il
-        clos quand le fichier a été écrit ? » — a besoin de dates choisies, pas
-        d'une horloge qui part du 1er janvier.
+        `modified` (ISO 8601 in UTC) replaces the mock clock for THIS file: a
+        client reasoning about a file's date -- "was this month closed when
+        the file was written?" -- needs chosen dates, not a clock that starts
+        on January 1st.
         """
-        chemin = "/".join(p for p in chemin.split("/") if p)
-        with self.verrou:
-            existant = self.trouver(chemin)
-            if existant is not None:
-                if existant.dossier:
-                    raise IsADirectoryError(chemin)
-                self._remplir(existant, contenu)
-                existant.version += 1
-                existant.modifie = modifie or self.instant()
-                existant.modificateur = dict(UTILISATEUR)
-                return existant, False
-            morceaux = chemin.split("/")
-            for profondeur in range(1, len(morceaux)):
-                parent = "/".join(morceaux[:profondeur])
-                if (dossier := self.trouver(parent)) is None:
-                    instant = self.instant()
-                    self._creer(parent, None, instant, instant, dict(UTILISATEUR))
-                elif not dossier.dossier:
+        path = "/".join(p for p in path.split("/") if p)
+        with self.lock:
+            existing = self.find(path)
+            if existing is not None:
+                if existing.is_folder:
+                    raise IsADirectoryError(path)
+                self._fill(existing, content)
+                existing.version += 1
+                existing.modified = modified or self.now()
+                existing.modifier = dict(USER)
+                return existing, False
+            parts = path.split("/")
+            for depth in range(1, len(parts)):
+                parent = "/".join(parts[:depth])
+                if (folder := self.find(parent)) is None:
+                    instant = self.now()
+                    self._create(parent, None, instant, instant, dict(USER))
+                elif not folder.is_folder:
                     raise NotADirectoryError(parent)
-            instant = modifie or self.instant()
-            return self._creer(chemin, contenu, instant, instant, dict(UTILISATEUR)), True
+            instant = modified or self.now()
+            return self._create(path, content, instant, instant, dict(USER)), True
 
-    def retirer(self, chemin: str) -> bool:
-        """Supprime un fichier — ou un dossier et tout ce qu'il contient."""
-        cle = _cle(chemin)
-        with self.verrou:
-            if not cle or cle not in self.elements:
+    def remove(self, path: str) -> bool:
+        """Removes a file -- or a folder and everything it contains."""
+        key = _key(path)
+        with self.lock:
+            if not key or key not in self.items:
                 return False
-            for autre in [c for c in self.elements if c == cle or c.startswith(cle + "/")]:
-                del self.elements[autre]
+            for other in [k for k in self.items if k == key or k.startswith(key + "/")]:
+                del self.items[other]
             return True
 
 
-lecteur_mock = Lecteur()
+mock_drive = Drive()
 
-routeur: APIRouter = APIRouter()
-
-
-# ── Les URL de téléchargement pré-authentifiées ──────────────────────────────
+router: APIRouter = APIRouter()
 
 
-def _b64(donnees: bytes) -> str:
-    return base64.urlsafe_b64encode(donnees).decode().rstrip("=")
+# ── Pre-authenticated download URLs ──────────────────────────────────────────
 
 
-def _signer(charge: str) -> str:
-    return _b64(hmac.new(_SECRET, charge.encode(), hashlib.sha256).digest())
+def _b64(data: bytes) -> str:
+    return base64.urlsafe_b64encode(data).decode().rstrip("=")
 
 
-def emettre_tempauth(unique_id: str) -> str:
-    """Un `tempauth` opaque, signé, qui EXPIRE — rien n'est stocké côté mock."""
-    expiration = int(time.time()) + TEMPAUTH_SECONDS
-    charge = _b64(json.dumps({"uid": unique_id, "exp": expiration}).encode())
-    return f"v1.{charge}.{_signer(charge)}"
+def _sign(payload: str) -> str:
+    return _b64(hmac.new(_SECRET, payload.encode(), hashlib.sha256).digest())
 
 
-def tempauth_valide(jeton: str, unique_id: str) -> bool:
+def issue_tempauth(unique_id: str) -> str:
+    """An opaque, signed `tempauth` that EXPIRES -- nothing is stored mock-side."""
+    expiry = int(time.time()) + TEMPAUTH_SECONDS
+    payload = _b64(json.dumps({"uid": unique_id, "exp": expiry}).encode())
+    return f"v1.{payload}.{_sign(payload)}"
+
+
+def tempauth_valid(token: str, unique_id: str) -> bool:
     try:
-        version, charge, signature = jeton.split(".")
-        contenu = json.loads(base64.urlsafe_b64decode(charge + "=" * (-len(charge) % 4)))
+        version, payload, signature = token.split(".")
+        content = json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))
     except ValueError:
         return False
-    if version != "v1" or not hmac.compare_digest(signature, _signer(charge)):
+    if version != "v1" or not hmac.compare_digest(signature, _sign(payload)):
         return False
-    if not isinstance(contenu, dict):
+    if not isinstance(content, dict):
         return False
-    return bool(contenu.get("uid") == unique_id and contenu.get("exp", 0) > time.time())
+    return bool(content.get("uid") == unique_id and content.get("exp", 0) > time.time())
 
 
-def _url_telechargement(request: Request, element: Element) -> str:
+def _download_url(request: Request, element: Element) -> str:
     base = DOWNLOAD_BASE_URL or str(request.base_url).rstrip("/")
-    parametres = urlencode(
+    params = urlencode(
         {
             "UniqueId": element.unique_id,
             "Translate": "false",
-            "tempauth": emettre_tempauth(element.unique_id),
+            "tempauth": issue_tempauth(element.unique_id),
             "ApiVersion": "2.0",
         }
     )
-    return f"{base}{SITE_PATH}/_layouts/15/download.aspx?{parametres}"
+    return f"{base}{SITE_PATH}/_layouts/15/download.aspx?{params}"
 
 
-# ── Le rendu ─────────────────────────────────────────────────────────────────
+# ── Rendering ─────────────────────────────────────────────────────────────────
 
 
-def _etiquette(element: Element, prefixe: str = "") -> str:
-    """`"{GUID},n"` — et `"c:{GUID},n"` pour le cTag. Les guillemets font partie
-    de la valeur, comme chez Graph."""
-    return f'"{prefixe}{{{element.unique_id.upper()}}},{element.version}"'
+def _tag(element: Element, prefix: str = "") -> str:
+    """`"{GUID},n"` -- and `"c:{GUID},n"` for the cTag. The quotes are part
+    of the value, as they are at Graph."""
+    return f'"{prefix}{{{element.unique_id.upper()}}},{element.version}"'
 
 
-def _reference_parent(element: Element) -> dict[str, Any]:
+def _parent_reference(element: Element) -> dict[str, Any]:
     reference: dict[str, Any] = {"driveType": "documentLibrary", "driveId": DRIVE_ID}
-    if not element.chemin:
+    if not element.path:
         return reference
-    parent = lecteur_mock.trouver(element.parent)
+    parent = mock_drive.find(element.parent)
     if parent is not None:
-        reference["id"] = parent.identifiant
-        if parent.chemin:
-            reference["name"] = parent.nom
-        reference["path"] = f"/drives/{DRIVE_ID}/root:" + (
-            f"/{parent.chemin}" if parent.chemin else ""
-        )
+        reference["id"] = parent.item_id
+        if parent.path:
+            reference["name"] = parent.name
+        reference["path"] = f"/drives/{DRIVE_ID}/root:" + (f"/{parent.path}" if parent.path else "")
     reference["siteId"] = SITE_ID
     return reference
 
 
-def _rendu(element: Element, request: Request) -> dict[str, Any]:
-    """Le jeu de propriétés PAR DÉFAUT d'un `driveItem` — large, comme Graph.
+def _render(element: Element, request: Request) -> dict[str, Any]:
+    """The DEFAULT property set of a `driveItem` -- wide, like Graph.
 
-    `createdBy` et `lastModifiedBy` y portent une identité. Un client qui n'a
-    besoin que du nom, de la taille et du `cTag` doit le DIRE par `$select`.
+    `createdBy` and `lastModifiedBy` carry an identity there. A client that
+    only needs the name, the size and the `cTag` must SAY so through
+    `$select`.
     """
-    objet: dict[str, Any] = {}
-    if not element.dossier:
-        # Rendue dans le jeu par défaut, comme chez Graph — mais PAS avec un
-        # `$select` qui ne la nomme pas.
-        objet["@microsoft.graph.downloadUrl"] = _url_telechargement(request, element)
-    objet |= {
-        "createdBy": {"user": dict(element.auteur)},
-        "createdDateTime": element.cree,
-        "eTag": _etiquette(element),
-        "id": element.identifiant,
-        "lastModifiedBy": {"user": dict(element.modificateur)},
-        "lastModifiedDateTime": element.modifie,
-        "name": element.nom,
-        "parentReference": _reference_parent(element),
-        "webUrl": f"{URL_BIBLIOTHEQUE}/{quote(element.chemin)}".rstrip("/"),
-        "cTag": _etiquette(element, "c:"),
+    obj: dict[str, Any] = {}
+    if not element.is_folder:
+        # Returned in the default set, as Graph does -- but NOT with a
+        # `$select` that doesn't name it.
+        obj["@microsoft.graph.downloadUrl"] = _download_url(request, element)
+    obj |= {
+        "createdBy": {"user": dict(element.author)},
+        "createdDateTime": element.created,
+        "eTag": _tag(element),
+        "id": element.item_id,
+        "lastModifiedBy": {"user": dict(element.modifier)},
+        "lastModifiedDateTime": element.modified,
+        "name": element.name,
+        "parentReference": _parent_reference(element),
+        "webUrl": f"{LIBRARY_URL}/{quote(element.path)}".rstrip("/"),
+        "cTag": _tag(element, "c:"),
         "fileSystemInfo": {
-            "createdDateTime": element.cree,
-            "lastModifiedDateTime": element.modifie,
+            "createdDateTime": element.created,
+            "lastModifiedDateTime": element.modified,
         },
-        "size": lecteur_mock.taille(element),
+        "size": mock_drive.size(element),
     }
-    if element.dossier:
-        objet["folder"] = {"childCount": len(lecteur_mock.enfants(element))}
-        if not element.chemin:
-            objet["root"] = {}
+    if element.is_folder:
+        obj["folder"] = {"childCount": len(mock_drive.children(element))}
+        if not element.path:
+            obj["root"] = {}
     else:
-        # `quickXorHash` SEUL : les bibliothèques de documents ne calculent ni
-        # sha1 ni sha256. Un client qui compare des sha256 tombe sur une clé
-        # absente — ici comme en production.
-        objet["file"] = {
-            "mimeType": element.type_mime,
-            "hashes": {"quickXorHash": element.empreinte},
+        # `quickXorHash` ONLY: document libraries compute neither sha1 nor
+        # sha256. A client comparing sha256 hits a missing key -- here as in
+        # production.
+        obj["file"] = {
+            "mimeType": element.mime_type,
+            "hashes": {"quickXorHash": element.digest},
         }
-    return objet
+    return obj
 
 
-#: L'univers de `$select` — les propriétés que le TYPE `driveItem` déclare
-#: (baseItem + driveItem au CSDL), pas celles que la page contient.
-PROPRIETES_ELEMENT = frozenset(
+#: The `$select` universe -- the properties the `driveItem` TYPE declares
+#: (baseItem + driveItem in the CSDL), not the ones the page contains.
+ITEM_PROPERTIES = frozenset(
     {
         "@microsoft.graph.downloadUrl",
         "audio",
@@ -518,430 +515,430 @@ PROPRIETES_ELEMENT = frozenset(
 )
 
 
-def _derniere_modification() -> str:
-    return max(e.modifie for e in lecteur_mock.elements.values())
+def _last_modified() -> str:
+    return max(e.modified for e in mock_drive.items.values())
 
 
 def _site() -> dict[str, Any]:
-    nom = SITE_PATH.rpartition("/")[2]
+    name = SITE_PATH.rpartition("/")[2]
     return {
-        "createdDateTime": _CREATION_SITE,
+        "createdDateTime": _SITE_CREATED,
         "description": "",
         "id": SITE_ID,
-        "lastModifiedDateTime": _derniere_modification(),
-        "name": nom,
-        "webUrl": URL_SITE,
-        "displayName": nom,
+        "lastModifiedDateTime": _last_modified(),
+        "name": name,
+        "webUrl": SITE_URL,
+        "displayName": name,
         "root": {},
         "siteCollection": {"hostname": SITE_HOSTNAME},
     }
 
 
-def _lecteur() -> dict[str, Any]:
-    utilise = sum(len(e.contenu) for e in lecteur_mock.elements.values() if e.contenu is not None)
+def _drive_payload() -> dict[str, Any]:
+    used = sum(len(e.content) for e in mock_drive.items.values() if e.content is not None)
     total = 27_487_790_694_400
     return {
-        "createdDateTime": _CREATION_SITE,
+        "createdDateTime": _SITE_CREATED,
         "description": "",
         "id": DRIVE_ID,
-        "lastModifiedDateTime": _derniere_modification(),
-        "name": BIBLIOTHEQUE,
-        "webUrl": URL_BIBLIOTHEQUE,
+        "lastModifiedDateTime": _last_modified(),
+        "name": LIBRARY,
+        "webUrl": LIBRARY_URL,
         "driveType": "documentLibrary",
         "createdBy": {"user": {"displayName": "System Account"}},
         "owner": {
             "group": {
-                "id": str(_guid("groupe-proprietaires")),
+                "id": str(_guid("group-owners")),
                 "displayName": f"{SITE_PATH.rpartition('/')[2]} Owners",
             }
         },
         "quota": {
             "deleted": 0,
-            "remaining": total - utilise,
+            "remaining": total - used,
             "state": "normal",
             "total": total,
-            "used": utilise,
+            "used": used,
         },
     }
 
 
-# ── Le préambule et les erreurs ──────────────────────────────────────────────
+# ── The preamble and errors ──────────────────────────────────────────────────
 
 
 def _prelude(request: Request, operation: str) -> JSONResponse | None:
-    """Jeton, étranglement (le préambule commun de `app.py`), puis droit sur le
-    site. Le compteur ne retient que les appels authentifiés et non étranglés :
-    un 429 rejoué par le client ne fausse pas le décompte de ses
-    téléchargements."""
-    if (refus := _refus(request)) is not None:
-        return refus
-    with lecteur_mock.verrou:
-        lecteur_mock.compteurs[operation] += 1
-    if lecteur_mock.droit == "none":
-        return _erreur_graph(403, "accessDenied", "Access denied")
+    """Token, throttling (the common preamble from `app.py`), then the site
+    grant. The counter only retains authenticated, non-throttled calls: a
+    429 replayed by the client doesn't skew its download count."""
+    if (denied := _denied(request)) is not None:
+        return denied
+    with mock_drive.lock:
+        mock_drive.counters[operation] += 1
+    if mock_drive.grant == "none":
+        return _graph_error(403, "accessDenied", "Access denied")
     return None
 
 
-def _introuvable() -> JSONResponse:
-    return _erreur_graph(404, "itemNotFound", "The resource could not be found.")
+def _not_found() -> JSONResponse:
+    return _graph_error(404, "itemNotFound", "The resource could not be found.")
 
 
-def _site_introuvable() -> JSONResponse:
-    return _erreur_graph(404, "itemNotFound", "Requested site could not be found")
+def _site_not_found() -> JSONResponse:
+    return _graph_error(404, "itemNotFound", "Requested site could not be found")
 
 
-def _select_inconnu(exc: _SelectInconnu, type_: str) -> JSONResponse:
-    return _erreur_graph(
+def _unknown_select(exc: _UnknownSelect, type_: str) -> JSONResponse:
+    return _graph_error(
         400,
         "BadRequest",
         "Parsing OData Select and Expand failed: Could not find a property named "
-        f"'{exc.champs[0]}' on type 'microsoft.graph.{type_}'.",
+        f"'{exc.fields[0]}' on type 'microsoft.graph.{type_}'.",
     )
 
 
-def _projeter_un(
-    objet: dict[str, Any], request: Request, univers: frozenset[str], contexte: str
+def _project_one(
+    obj: dict[str, Any], request: Request, universe: frozenset[str], context: str
 ) -> dict[str, Any]:
-    (projete,) = _projeter([objet], request.query_params.get("$select"), univers)
-    return {"@odata.context": f"https://graph.microsoft.com/v1.0/$metadata#{contexte}", **projete}
+    (projected,) = _project([obj], request.query_params.get("$select"), universe)
+    return {"@odata.context": f"https://graph.microsoft.com/v1.0/$metadata#{context}", **projected}
 
 
-_REPONSES: dict[int | str, dict[str, Any]] = {
-    401: {"description": "`InvalidAuthenticationToken` — Bearer absent, expiré, autre audience"},
-    403: {"description": "`accessDenied` — aucun rôle `Sites.Selected` accordé sur le site"},
+_RESPONSES: dict[int | str, dict[str, Any]] = {
+    401: {"description": "`InvalidAuthenticationToken` -- Bearer missing, expired, wrong audience"},
+    403: {"description": "`accessDenied` -- no `Sites.Selected` role granted on the site"},
     404: {"description": "`itemNotFound`"},
     429: {"description": "`TooManyRequests` + `Retry-After` (injectable)"},
 }
 
 
-# ── Le site ──────────────────────────────────────────────────────────────────
+# ── The site ──────────────────────────────────────────────────────────────────
 
 
-def _servir_site(request: Request) -> Response:
+def _serve_site(request: Request) -> Response:
     try:
-        return JSONResponse(_projeter_un(_site(), request, frozenset(_site()), "sites/$entity"))
-    except _SelectInconnu as exc:
-        return _select_inconnu(exc, "site")
+        return JSONResponse(_project_one(_site(), request, frozenset(_site()), "sites/$entity"))
+    except _UnknownSelect as exc:
+        return _unknown_select(exc, "site")
 
 
-@routeur.get("/v1.0/sites/{hostname}:/{server_relative_path:path}", responses=_REPONSES)
-def site_par_chemin(hostname: str, server_relative_path: str, request: Request) -> Response:
-    """Le site par son CHEMIN — `/sites/{hôte}:/{chemin relatif au serveur}`.
+@router.get("/v1.0/sites/{hostname}:/{server_relative_path:path}", responses=_RESPONSES)
+def site_by_path(hostname: str, server_relative_path: str, request: Request) -> Response:
+    """The site by its PATH -- `/sites/{host}:/{server-relative path}`.
 
-    C'est l'adressage qu'un client configure (un hôte et un chemin lisibles),
-    et il en tire l'identifiant COMPOSITE du site pour la suite. Le
-    deux-points final optionnel (`…:/sites/documents:`) est accepté, comme
-    chez Graph.
+    That's the addressing a client configures (a readable host and path),
+    and it derives the site's COMPOSITE identifier from it for the rest. The
+    optional trailing colon (`…:/sites/documents:`) is accepted, as at Graph.
     """
-    if (refus := _prelude(request, "site")) is not None:
-        return refus
+    if (denied := _prelude(request, "site")) is not None:
+        return denied
     if hostname.casefold() != SITE_HOSTNAME:
-        return _erreur_graph(400, "invalidRequest", "Invalid hostname for this tenancy")
-    if _cle(server_relative_path.rstrip(":")) != _cle(SITE_PATH):
-        return _site_introuvable()
-    return _servir_site(request)
+        return _graph_error(400, "invalidRequest", "Invalid hostname for this tenancy")
+    if _key(server_relative_path.rstrip(":")) != _key(SITE_PATH):
+        return _site_not_found()
+    return _serve_site(request)
 
 
-@routeur.get("/v1.0/sites/{site_id}", responses=_REPONSES)
+@router.get("/v1.0/sites/{site_id}", responses=_RESPONSES)
 def site(site_id: str, request: Request) -> Response:
-    """Le site par son identifiant composite."""
-    if (refus := _prelude(request, "site")) is not None:
-        return refus
+    """The site by its composite identifier."""
+    if (denied := _prelude(request, "site")) is not None:
+        return denied
     if site_id.casefold() != SITE_ID.casefold():
-        return _site_introuvable()
-    return _servir_site(request)
+        return _site_not_found()
+    return _serve_site(request)
 
 
-def _servir_lecteur(request: Request) -> Response:
+def _serve_drive(request: Request) -> Response:
     try:
         return JSONResponse(
-            _projeter_un(_lecteur(), request, frozenset(_lecteur()), "drives/$entity")
+            _project_one(_drive_payload(), request, frozenset(_drive_payload()), "drives/$entity")
         )
-    except _SelectInconnu as exc:
-        return _select_inconnu(exc, "drive")
+    except _UnknownSelect as exc:
+        return _unknown_select(exc, "drive")
 
 
-@routeur.get("/v1.0/sites/{site_id}/drive", responses=_REPONSES)
-def lecteur_par_defaut(site_id: str, request: Request) -> Response:
-    """La bibliothèque PAR DÉFAUT du site — « Documents »."""
-    if (refus := _prelude(request, "drive")) is not None:
-        return refus
+@router.get("/v1.0/sites/{site_id}/drive", responses=_RESPONSES)
+def default_drive(site_id: str, request: Request) -> Response:
+    """The site's DEFAULT library -- "Documents"."""
+    if (denied := _prelude(request, "drive")) is not None:
+        return denied
     if site_id.casefold() != SITE_ID.casefold():
-        return _site_introuvable()
-    return _servir_lecteur(request)
+        return _site_not_found()
+    return _serve_drive(request)
 
 
-@routeur.get("/v1.0/sites/{site_id}/drives", responses=_REPONSES)
-def lecteurs(site_id: str, request: Request) -> Response:
-    """Les bibliothèques du site, en collection `value[]`."""
-    if (refus := _prelude(request, "drives")) is not None:
-        return refus
+@router.get("/v1.0/sites/{site_id}/drives", responses=_RESPONSES)
+def drives(site_id: str, request: Request) -> Response:
+    """The site's libraries, as a `value[]` collection."""
+    if (denied := _prelude(request, "drives")) is not None:
+        return denied
     if site_id.casefold() != SITE_ID.casefold():
-        return _site_introuvable()
+        return _site_not_found()
     try:
-        valeurs = _projeter(
-            [_lecteur()], request.query_params.get("$select"), frozenset(_lecteur())
+        values = _project(
+            [_drive_payload()], request.query_params.get("$select"), frozenset(_drive_payload())
         )
-    except _SelectInconnu as exc:
-        return _select_inconnu(exc, "drive")
+    except _UnknownSelect as exc:
+        return _unknown_select(exc, "drive")
     return JSONResponse(
-        {"@odata.context": "https://graph.microsoft.com/v1.0/$metadata#drives", "value": valeurs}
+        {"@odata.context": "https://graph.microsoft.com/v1.0/$metadata#drives", "value": values}
     )
 
 
-@routeur.get("/v1.0/drives/{drive_id}", responses=_REPONSES)
-def lecteur(drive_id: str, request: Request) -> Response:
-    """Un lecteur par son identifiant `b!…`."""
-    if (refus := _prelude(request, "drive")) is not None:
-        return refus
+@router.get("/v1.0/drives/{drive_id}", responses=_RESPONSES)
+def drive(drive_id: str, request: Request) -> Response:
+    """A drive by its `b!…` identifier."""
+    if (denied := _prelude(request, "drive")) is not None:
+        return denied
     if drive_id != DRIVE_ID:
-        return _introuvable()
-    return _servir_lecteur(request)
+        return _not_found()
+    return _serve_drive(request)
 
 
-# ── Les éléments ─────────────────────────────────────────────────────────────
+# ── Items ─────────────────────────────────────────────────────────────────────
 
 
-def _servir_element(request: Request, element: Element) -> Response:
+def _serve_item(request: Request, element: Element) -> Response:
     try:
         return JSONResponse(
-            _projeter_un(
-                _rendu(element, request),
+            _project_one(
+                _render(element, request),
                 request,
-                PROPRIETES_ELEMENT,
+                ITEM_PROPERTIES,
                 f"drives('{DRIVE_ID}')/items/$entity",
             )
         )
-    except _SelectInconnu as exc:
-        return _select_inconnu(exc, "driveItem")
+    except _UnknownSelect as exc:
+        return _unknown_select(exc, "driveItem")
 
 
-def _curseur(element: Element) -> str:
-    """Le `$skiptoken` — opaque pour le client : la clé de tri du DERNIER
-    élément rendu, pas un rang. Un fichier ajouté ou retiré pendant la
-    pagination ne décale donc rien."""
+def _cursor(element: Element) -> str:
+    """The `$skiptoken` -- opaque to the client: the sort key of the LAST
+    item returned, not a rank. A file added or removed during pagination
+    therefore shifts nothing."""
     return _b64(
-        f"Paged=TRUE&p_SortBehavior=0&p_FileLeafRef={quote(element.nom)}"
-        f"&p_ID={element.numero}".encode()
+        f"Paged=TRUE&p_SortBehavior=0&p_FileLeafRef={quote(element.name)}"
+        f"&p_ID={element.number}".encode()
     )
 
 
-def _lire_curseur(jeton: str) -> str:
+def _read_cursor(token: str) -> str:
     try:
-        texte = base64.urlsafe_b64decode(jeton + "=" * (-len(jeton) % 4)).decode()
-        return parse_qs(texte, strict_parsing=True)["p_FileLeafRef"][0].casefold()
+        text = base64.urlsafe_b64decode(token + "=" * (-len(token) % 4)).decode()
+        return parse_qs(text, strict_parsing=True)["p_FileLeafRef"][0].casefold()
     except (ValueError, KeyError) as exc:
         raise ValueError("Invalid skip token.") from exc
 
 
-def _taille_de_page(request: Request) -> int:
-    """`$top` est un PLAFOND, jamais une promesse : OData autorise le serveur à
-    rendre moins, et Graph le fait. Un `$top=999` ne court-circuite donc pas
-    la pagination du mock — le client doit suivre `@odata.nextLink` quoi qu'il
-    ait demandé."""
-    taille = max(1, DRIVE_PAGE_SIZE)
+def _page_size(request: Request) -> int:
+    """`$top` is a CEILING, never a promise: OData lets the server return
+    less, and Graph does. A `$top=999` therefore does not short-circuit the
+    mock's pagination -- the client must follow `@odata.nextLink` whatever it
+    asked for."""
+    size = max(1, DRIVE_PAGE_SIZE)
     if (top := request.query_params.get("$top")) is not None:
         if not top.isdigit() or int(top) < 1:
             raise ValueError(f"Invalid value '{top}' for $top query option.")
-        taille = min(taille, int(top))
-    return taille
+        size = min(size, int(top))
+    return size
 
 
-def _servir_enfants(request: Request, dossier: Element) -> Response:
+def _serve_children(request: Request, folder: Element) -> Response:
     try:
-        taille = _taille_de_page(request)
-        jeton = request.query_params.get("$skiptoken")
-        apres = _lire_curseur(jeton) if jeton is not None else None
+        size = _page_size(request)
+        token = request.query_params.get("$skiptoken")
+        after = _read_cursor(token) if token is not None else None
     except ValueError as exc:
-        return _erreur_graph(400, "invalidRequest", str(exc))
+        return _graph_error(400, "invalidRequest", str(exc))
 
-    with lecteur_mock.verrou:
-        enfants = lecteur_mock.enfants(dossier)
-        if apres is not None:
-            enfants = [e for e in enfants if e.nom.casefold() > apres]
-        page, reste = enfants[:taille], enfants[taille:]
+    with mock_drive.lock:
+        children = mock_drive.children(folder)
+        if after is not None:
+            children = [e for e in children if e.name.casefold() > after]
+        page, rest = children[:size], children[size:]
         try:
-            valeurs = _projeter(
-                [_rendu(e, request) for e in page],
+            values = _project(
+                [_render(e, request) for e in page],
                 request.query_params.get("$select"),
-                PROPRIETES_ELEMENT,
+                ITEM_PROPERTIES,
             )
-        except _SelectInconnu as exc:
-            return _select_inconnu(exc, "driveItem")
+        except _UnknownSelect as exc:
+            return _unknown_select(exc, "driveItem")
 
-    corps: dict[str, Any] = {
+    body: dict[str, Any] = {
         "@odata.context": "https://graph.microsoft.com/v1.0/$metadata#Collection(driveItem)",
-        "value": valeurs,
+        "value": values,
     }
-    if reste:
-        # Le lien suivant reprend le chemin de la requête — par chemin ou par
-        # identifiant, comme elle est venue — et recopie `$select` et `$top`.
-        chemin = quote(request.url.path, safe="/:!,$'()*+;=@")
-        corps["@odata.nextLink"] = _lien_suivant(request, chemin, _curseur(page[-1]))
-    return JSONResponse(corps)
+    if rest:
+        # The next link reuses the request's path -- by path or by id, as it
+        # came in -- and carries `$select` and `$top` over.
+        path = quote(request.url.path, safe="/:!,$'()*+;=@")
+        body["@odata.nextLink"] = _next_link(request, path, _cursor(page[-1]))
+    return JSONResponse(body)
 
 
-def _servir_contenu(request: Request, element: Element) -> Response:
-    """302 vers une URL PRÉ-AUTHENTIFIÉE — jamais les octets en direct."""
-    if element.dossier:
-        return _introuvable()
-    return RedirectResponse(_url_telechargement(request, element), status_code=302)
+def _serve_content(request: Request, element: Element) -> Response:
+    """302 to a PRE-AUTHENTICATED URL -- never the raw bytes."""
+    if element.is_folder:
+        return _not_found()
+    return RedirectResponse(_download_url(request, element), status_code=302)
 
 
-def _decouper(chemin: str) -> tuple[str, str]:
-    """`reports:/children` → (`reports`, `children`) ;
+def _split(path: str) -> tuple[str, str]:
+    """`reports:/children` → (`reports`, `children`);
     `reports/report-1.txt:` → (`reports/report-1.txt`, ``)."""
-    if ":/" in chemin:
-        cible, _, segment = chemin.rpartition(":/")
-        return cible, segment.strip("/")
-    return chemin.rstrip(":/"), ""
+    if ":/" in path:
+        target, _, segment = path.rpartition(":/")
+        return target, segment.strip("/")
+    return path.rstrip(":/"), ""
 
 
-_REPONSES_CONTENU: dict[int | str, dict[str, Any]] = {
-    **_REPONSES,
+_CONTENT_RESPONSES: dict[int | str, dict[str, Any]] = {
+    **_RESPONSES,
     302: {
-        "description": "Redirection vers une URL de téléchargement PRÉ-AUTHENTIFIÉE (`Location`, "
-        "`tempauth` à durée limitée). À suivre SANS en-tête Authorization : l'URL "
-        "rend 401 si on lui en présente un."
+        "description": "Redirect to a PRE-AUTHENTICATED download URL (`Location`, short-lived "
+        "`tempauth`). Follow it WITHOUT an Authorization header: the URL returns 401 if "
+        "one is presented."
     },
 }
 
 
-@routeur.get("/v1.0/drives/{drive_id}/root", responses=_REPONSES)
-def racine(drive_id: str, request: Request) -> Response:
-    """La racine du lecteur."""
-    if (refus := _prelude(request, "item")) is not None:
-        return refus
+@router.get("/v1.0/drives/{drive_id}/root", responses=_RESPONSES)
+def root(drive_id: str, request: Request) -> Response:
+    """The drive's root."""
+    if (denied := _prelude(request, "item")) is not None:
+        return denied
     if drive_id != DRIVE_ID:
-        return _introuvable()
-    return _servir_element(request, lecteur_mock.racine())
+        return _not_found()
+    return _serve_item(request, mock_drive.root())
 
 
-@routeur.get("/v1.0/drives/{drive_id}/root/children", responses=_REPONSES)
-def enfants_de_la_racine(drive_id: str, request: Request) -> Response:
-    """Les enfants de la racine — vides tant que rien n'a été écrit."""
-    if (refus := _prelude(request, "children")) is not None:
-        return refus
+@router.get("/v1.0/drives/{drive_id}/root/children", responses=_RESPONSES)
+def root_children(drive_id: str, request: Request) -> Response:
+    """The root's children -- empty until something is written."""
+    if (denied := _prelude(request, "children")) is not None:
+        return denied
     if drive_id != DRIVE_ID:
-        return _introuvable()
-    return _servir_enfants(request, lecteur_mock.racine())
+        return _not_found()
+    return _serve_children(request, mock_drive.root())
 
 
-@routeur.get(
-    "/v1.0/drives/{drive_id}/root:/{chemin:path}",
-    responses=_REPONSES_CONTENU,
+@router.get(
+    "/v1.0/drives/{drive_id}/root:/{path:path}",
+    responses=_CONTENT_RESPONSES,
 )
-def par_chemin(drive_id: str, chemin: str, request: Request) -> Response:
-    """L'adressage PAR CHEMIN, sous ses trois formes :
+def by_path(drive_id: str, path: str, request: Request) -> Response:
+    """PATH addressing, in its three forms:
 
-    • `root:/reports:/children` — les enfants d'un dossier, PAGINÉS
-      (`@odata.nextLink`, `$skiptoken` opaque), `$select` honoré ;
-    • `root:/reports/report-1.txt` (deux-points final facultatif) — un
-      élément ;
-    • `root:/reports/report-1.txt:/content` — 302 vers l'URL de
-      téléchargement.
+    • `root:/reports:/children` -- a folder's children, PAGINATED
+      (`@odata.nextLink`, opaque `$skiptoken`), `$select` honoured;
+    • `root:/reports/report-1.txt` (trailing colon optional) -- an item;
+    • `root:/reports/report-1.txt:/content` -- 302 to the download URL.
 
-    La casse du chemin est indifférente.
+    The path's case is immaterial.
     """
-    cible, segment = _decouper(chemin)
-    servir = {"": _servir_element, "children": _servir_enfants, "content": _servir_contenu}
+    target, segment = _split(path)
+    handlers = {"": _serve_item, "children": _serve_children, "content": _serve_content}
     if (
-        refus := _prelude(request, segment if segment in servir and segment else "item")
+        denied := _prelude(request, segment if segment in handlers and segment else "item")
     ) is not None:
-        return refus
-    if segment not in servir:
-        return _erreur_graph(400, "BadRequest", f"Resource not found for the segment '{segment}'.")
-    element = lecteur_mock.trouver(cible) if drive_id == DRIVE_ID else None
-    return _introuvable() if element is None else servir[segment](request, element)
+        return denied
+    if segment not in handlers:
+        return _graph_error(400, "BadRequest", f"Resource not found for the segment '{segment}'.")
+    element = mock_drive.find(target) if drive_id == DRIVE_ID else None
+    return _not_found() if element is None else handlers[segment](request, element)
 
 
-@routeur.get("/v1.0/drives/{drive_id}/items/{item_id}", responses=_REPONSES)
-def element_par_identifiant(drive_id: str, item_id: str, request: Request) -> Response:
-    """Un élément par son identifiant `01…`."""
-    if (refus := _prelude(request, "item")) is not None:
-        return refus
-    element = lecteur_mock.par_identifiant(item_id) if drive_id == DRIVE_ID else None
-    return _introuvable() if element is None else _servir_element(request, element)
+@router.get("/v1.0/drives/{drive_id}/items/{item_id}", responses=_RESPONSES)
+def item_by_id(drive_id: str, item_id: str, request: Request) -> Response:
+    """An item by its `01…` identifier."""
+    if (denied := _prelude(request, "item")) is not None:
+        return denied
+    element = mock_drive.by_id(item_id) if drive_id == DRIVE_ID else None
+    return _not_found() if element is None else _serve_item(request, element)
 
 
-@routeur.get("/v1.0/drives/{drive_id}/items/{item_id}/children", responses=_REPONSES)
-def enfants_par_identifiant(drive_id: str, item_id: str, request: Request) -> Response:
-    """Les enfants d'un dossier désigné par son identifiant — même pagination."""
-    if (refus := _prelude(request, "children")) is not None:
-        return refus
-    element = lecteur_mock.par_identifiant(item_id) if drive_id == DRIVE_ID else None
-    return _introuvable() if element is None else _servir_enfants(request, element)
+@router.get("/v1.0/drives/{drive_id}/items/{item_id}/children", responses=_RESPONSES)
+def children_by_id(drive_id: str, item_id: str, request: Request) -> Response:
+    """A folder's children by its identifier -- same pagination."""
+    if (denied := _prelude(request, "children")) is not None:
+        return denied
+    element = mock_drive.by_id(item_id) if drive_id == DRIVE_ID else None
+    return _not_found() if element is None else _serve_children(request, element)
 
 
-@routeur.get("/v1.0/drives/{drive_id}/items/{item_id}/content", responses=_REPONSES_CONTENU)
-def contenu(drive_id: str, item_id: str, request: Request) -> Response:
-    """Le contenu d'un fichier : 302 vers une URL PRÉ-AUTHENTIFIÉE.
+@router.get("/v1.0/drives/{drive_id}/items/{item_id}/content", responses=_CONTENT_RESPONSES)
+def content(drive_id: str, item_id: str, request: Request) -> Response:
+    """A file's content: 302 to a PRE-AUTHENTICATED URL.
 
-    C'est ce que Graph rend, et il faut le suivre SANS le Bearer — l'URL porte
-    sa propre autorisation (`tempauth`), limitée dans le temps.
+    That's what Graph returns, and it must be followed WITHOUT the Bearer --
+    the URL carries its own authorization (`tempauth`), time-limited.
     """
-    if (refus := _prelude(request, "content")) is not None:
-        return refus
-    element = lecteur_mock.par_identifiant(item_id) if drive_id == DRIVE_ID else None
-    return _introuvable() if element is None else _servir_contenu(request, element)
+    if (denied := _prelude(request, "content")) is not None:
+        return denied
+    element = mock_drive.by_id(item_id) if drive_id == DRIVE_ID else None
+    return _not_found() if element is None else _serve_content(request, element)
 
 
-# ── L'hôte du site : le téléchargement ───────────────────────────────────────
+# ── The site's host: downloading ─────────────────────────────────────────────
 
 
-def _refus_telechargement(description: str) -> JSONResponse:
-    # Le STATUT est ce qui fait foi (401) ; le corps exact du vrai service sur
-    # ces refus n'a pas été relevé — un client ne doit pas s'y adosser.
+def _download_denied(description: str) -> JSONResponse:
+    # The STATUS is what's load-bearing (401); the exact body of the real
+    # service on these refusals hasn't been observed -- a client must not
+    # rely on it.
     return JSONResponse(
         status_code=401, content={"error": "invalid_request", "error_description": description}
     )
 
 
-@routeur.get(f"{SITE_PATH}/_layouts/15/download.aspx", include_in_schema=False)
-def telecharger(request: Request) -> Response:
-    """L'URL PRÉ-AUTHENTIFIÉE — hôte du site, hors de Graph, hors contrat.
+@router.get(f"{SITE_PATH}/_layouts/15/download.aspx", include_in_schema=False)
+def download(request: Request) -> Response:
+    """The PRE-AUTHENTICATED URL -- the site's host, outside Graph, outside
+    the contract.
 
-    ┌─ UN BEARER ICI EST UNE FAUTE ──────────────────────────────────────────┐
-    │ L'autorisation est DANS l'URL (`tempauth`). Un client qui y renvoie le │
-    │ jeton Graph expose ce jeton à un autre hôte — et se fait refuser : 401.│
-    │ Un `tempauth` inconnu, falsifié ou expiré : 401 aussi.                 │
-    └────────────────────────────────────────────────────────────────────────┘
+    ┌─ A BEARER HERE IS A MISTAKE ───────────────────────────────────────────┐
+    │ Authorization is IN the URL (`tempauth`). A client forwarding the      │
+    │ Graph token there exposes that token to another host -- and gets      │
+    │ refused: 401. An unknown, tampered with, or expired `tempauth`: 401    │
+    │ too.                                                                   │
+    └──────────────────────────────────────────────────────────────────────────┘
     """
     if "authorization" in request.headers:
-        return _refus_telechargement(
+        return _download_denied(
             "Pre-authenticated download URL: the request must not carry an Authorization header."
         )
     unique_id = request.query_params.get("UniqueId", "").strip("{}").lower()
-    if not tempauth_valide(request.query_params.get("tempauth", ""), unique_id):
-        return _refus_telechargement("Invalid or expired tempauth.")
-    with lecteur_mock.verrou:
-        lecteur_mock.compteurs["download"] += 1
-        element = lecteur_mock.par_unique_id(unique_id)
-    if element is None or element.contenu is None:
+    if not tempauth_valid(request.query_params.get("tempauth", ""), unique_id):
+        return _download_denied("Invalid or expired tempauth.")
+    with mock_drive.lock:
+        mock_drive.counters["download"] += 1
+        element = mock_drive.by_unique_id(unique_id)
+    if element is None or element.content is None:
         return JSONResponse(status_code=404, content={"error": "File Not Found."})
     return Response(
-        element.contenu,
-        media_type=element.type_mime,
+        element.content,
+        media_type=element.mime_type,
         headers={
-            "Content-Disposition": f"attachment; filename*=UTF-8''{quote(element.nom)}",
-            "ETag": _etiquette(element),
-            "CTag": _etiquette(element, "c:"),
+            "Content-Disposition": f"attachment; filename*=UTF-8''{quote(element.name)}",
+            "ETag": _tag(element),
+            "CTag": _tag(element, "c:"),
         },
     )
 
 
-def nom_valide(chemin: str) -> bool:
-    """Un chemin que le vrai service accepterait.
+def valid_name(path: str) -> bool:
+    """A path the real service would accept.
 
-    Règles publiées (« Restrictions and limitations in OneDrive and
-    SharePoint », support.microsoft.com) : ni `" * : < > ? / \\ |`, ni espace
-    en tête ou en fin, ni `_vti_` nulle part dans le nom.
+    Published rules ("Restrictions and limitations in OneDrive and
+    SharePoint", support.microsoft.com): no `" * : < > ? / \\ |`, no leading
+    or trailing space, no `_vti_` anywhere in the name.
 
-    Exception ASSUMÉE : les noms en `~$…`, que la même page déclare invalides.
-    Un fichier de verrou doit pouvoir être écrit pour éprouver le filtre de
-    fichiers temporaires d'un client.
+    ASSUMED exception: names starting with `~$…`, which the same page
+    declares invalid. A lock file must be writable to exercise a client's
+    temporary-file filter.
     """
-    morceaux = [p for p in chemin.split("/") if p]
-    return bool(morceaux) and all(
-        not (_INTERDITS & set(p)) and p == p.strip() and "_vti_" not in p.lower() for p in morceaux
+    parts = [p for p in path.split("/") if p]
+    return bool(parts) and all(
+        not (_FORBIDDEN_CHARS & set(p)) and p == p.strip() and "_vti_" not in p.lower()
+        for p in parts
     )
