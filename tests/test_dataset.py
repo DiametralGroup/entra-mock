@@ -1,97 +1,95 @@
-"""Le jeu de données — et surtout ses deux cas limites.
+"""The dataset -- and above all its two edge cases.
 
-Ce mock ne vaut pas par son volume mais par ce qu'il permet de PROUVER à la
-jointure avec le SIRH. Les quatre groupes correspondent aux quatre règles du
-modèle d'autorisation d'insights360, et deux UPN existent uniquement pour
-éprouver les bords :
+This mock isn't worth its volume but what it lets us PROVE at the join with
+the HR system. The four groups match the four rules of insights360's
+authorization model, and two UPNs exist solely to exercise the edges:
 
-  • `ext.consultant@boreal-conseil.example` — membre d'un groupe, ABSENT du SIRH ;
-  • `kevin.silva@boreal-conseil.example`     — présent au SIRH, membre d'AUCUN groupe.
+  • `ext.consultant@boreal-conseil.example` -- member of a group, ABSENT from the HR system;
+  • `kevin.silva@boreal-conseil.example`     -- present in HR, member of NO group.
 
-Si ces deux-là disparaissaient, la suite d'autorisation aval passerait sans
-plus rien démontrer.
+If either one disappeared, the downstream authorization suite would pass
+while no longer proving anything.
 """
 
 from __future__ import annotations
 
-from conftest import tous_les_groupes
+from conftest import all_groups
 
 
-def _tous_les_membres(client, auth) -> set[str]:
-    membres: set[str] = set()
-    for groupe in tous_les_groupes(client, auth):
-        url = f"/v1.0/groups/{groupe['id']}/members"
+def _all_members(client, auth) -> set[str]:
+    members: set[str] = set()
+    for group in all_groups(client, auth):
+        url = f"/v1.0/groups/{group['id']}/members"
         while url:
-            corps = client.get(url, headers=auth).json()
-            # `.get` et non `[...]` : tous les membres ne sont PAS des
-            # personnes — `members` rend des `directoryObject`, dont un groupe
-            # imbriqué et un principal de service, sans UPN ni l'un ni l'autre.
-            membres.update(
-                m["userPrincipalName"] for m in corps["value"] if m.get("userPrincipalName")
+            body = client.get(url, headers=auth).json()
+            # `.get` and not `[...]`: not all members are people --
+            # `members` returns `directoryObject`s, among which a nested
+            # group and a service principal, neither with a UPN.
+            members.update(
+                m["userPrincipalName"] for m in body["value"] if m.get("userPrincipalName")
             )
-            suivant = corps.get("@odata.nextLink")
-            url = suivant.replace("http://testserver", "") if suivant else ""
-    return membres
+            next_link = body.get("@odata.nextLink")
+            url = next_link.replace("http://testserver", "") if next_link else ""
+    return members
 
 
-def test_les_quatre_groupes_des_quatre_regles(client, auth):
-    noms = {g["displayName"] for g in tous_les_groupes(client, auth)}
-    assert {"grp-bi-rh", "grp-bi-sales", "grp-bi-direction", "grp-bi-comex"} <= noms
+def test_the_four_groups_match_the_four_rules(client, auth):
+    names = {g["displayName"] for g in all_groups(client, auth)}
+    assert {"grp-bi-rh", "grp-bi-sales", "grp-bi-direction", "grp-bi-comex"} <= names
 
 
-def test_le_groupe_imbrique_n_ajoute_aucune_appartenance(client, auth):
-    """Il éprouve le DIAGNOSTIC du consommateur, pas son modèle d'autorisation.
+def test_the_nested_group_adds_no_membership(client, auth):
+    """It exercises the consumer's DIAGNOSTIC, not its authorization model.
 
-    `grp-bi-imbrique` ne contient qu'un groupe et un principal de service :
-    aucun UPN, donc aucune ligne d'appartenance. Les attentes aval sont
-    inchangées — ce qui change, c'est qu'un consommateur doit maintenant
-    distinguer « objet sans UPN attendu » de « groupe imbriqué, donc des
-    ayants droit invisibles ».
+    `grp-bi-imbrique` contains only a group and a service principal: no UPN,
+    hence no membership row. The downstream expectations are unchanged --
+    what changes is that a consumer must now distinguish "object with no UPN
+    expected" from "nested group, hence invisible rightful holders".
     """
-    groupes = {g["displayName"]: g["id"] for g in tous_les_groupes(client, auth)}
-    membres = client.get(f"/v1.0/groups/{groupes['grp-bi-imbrique']}/members", headers=auth).json()
-    assert all("userPrincipalName" not in m for m in membres["value"])
+    groups = {g["displayName"]: g["id"] for g in all_groups(client, auth)}
+    members = client.get(f"/v1.0/groups/{groups['grp-bi-imbrique']}/members", headers=auth).json()
+    assert all("userPrincipalName" not in m for m in members["value"])
 
 
-def test_le_domaine_est_celui_du_jeu_realiste(client, auth):
-    """L'UPN est la SEULE clé de jointure entre l'annuaire et le SIRH.
+def test_the_domain_matches_the_realiste_dataset(client, auth):
+    """The UPN is the ONLY join key between the directory and the HR system.
 
-    Un domaine qui diverge de boondmanager-mock ne produit aucune erreur : il
-    produit zéro appartenance, donc zéro visibilité, donc une suite
-    d'autorisation verte PAR VACUITÉ. Ce test est le garde-fou — il doit
-    casser bruyamment le jour où l'un des deux jeux bouge sans l'autre.
+    A domain that drifts from boondmanager-mock produces no error: it
+    produces zero memberships, hence zero visibility, hence an authorization
+    suite green BY VACUITY. This test is the guard rail -- it must break
+    loudly the day one of the two datasets moves without the other.
     """
-    membres = _tous_les_membres(client, auth)
-    assert membres, "aucun membre servi"
-    assert all(upn.endswith("@boreal-conseil.example") for upn in membres), membres
+    members = _all_members(client, auth)
+    assert members, "no member served"
+    assert all(upn.endswith("@boreal-conseil.example") for upn in members), members
 
 
-def test_le_membre_absent_du_sirh_est_present(client, auth):
-    """Il DOIT être servi : le pipeline doit le laisser tomber à la jointure,
-    jamais produire une ligne à clé inconnue — ce qui ferait dégénérer le
-    prédicat de la couche interne en « pas de filtre »."""
-    assert "ext.consultant@boreal-conseil.example" in _tous_les_membres(client, auth)
+def test_the_member_absent_from_hr_is_present(client, auth):
+    """It MUST be served: the pipeline must drop it at the join, never emit
+    a row with an unknown key -- which would degrade the inner layer's
+    predicate into "no filter"."""
+    assert "ext.consultant@boreal-conseil.example" in _all_members(client, auth)
 
 
-def test_le_collaborateur_sans_groupe_est_absent(client, auth):
-    """`kevin.silva` n'appartient à AUCUN groupe : il ne doit voir que
-    lui-même (règle 1). Sa présence ici invaliderait le cas limite."""
-    assert "kevin.silva@boreal-conseil.example" not in _tous_les_membres(client, auth)
+def test_the_collaborator_without_a_group_is_absent(client, auth):
+    """`kevin.silva` belongs to NO group: he must see only himself (rule
+    1). His presence here would invalidate the edge case."""
+    assert "kevin.silva@boreal-conseil.example" not in _all_members(client, auth)
 
 
-def test_comex_recoupe_direction(client, auth):
-    """La règle 4 (visibilité totale) porte sur une personne qui a AUSSI une
-    portée par groupe : c'est ce recoupement qui éprouve la déduplication de
-    l'union des règles."""
-    groupes = {g["displayName"]: g["id"] for g in tous_les_groupes(client, auth)}
-    comex = client.get(f"/v1.0/groups/{groupes['grp-bi-comex']}/members", headers=auth).json()
+def test_comex_overlaps_direction(client, auth):
+    """Rule 4 (full visibility) applies to a person who ALSO has a group
+    scope: that overlap is what exercises the deduplication of the union of
+    rules."""
+    groups = {g["displayName"]: g["id"] for g in all_groups(client, auth)}
+    comex = client.get(f"/v1.0/groups/{groups['grp-bi-comex']}/members", headers=auth).json()
     direction = client.get(
-        f"/v1.0/groups/{groupes['grp-bi-direction']}/members", headers=auth
+        f"/v1.0/groups/{groups['grp-bi-direction']}/members", headers=auth
     ).json()
     assert comex["value"][0]["userPrincipalName"] == direction["value"][0]["userPrincipalName"]
 
 
-def test_le_jeu_est_deterministe(client, auth):
-    """Aucun aléa : deux lectures rendent le même monde. Le jeu est une
-    FIXTURE, et les attentes aval s'y adossent."""
-    assert _tous_les_membres(client, auth) == _tous_les_membres(client, auth)
+def test_the_dataset_is_deterministic(client, auth):
+    """No randomness: two reads return the same world. The dataset is a
+    FIXTURE, and downstream expectations rely on it."""
+    assert _all_members(client, auth) == _all_members(client, auth)

@@ -20,13 +20,12 @@ paths:
   /{tenant}/oauth2/v2.0/token:
     post:
       summary: Token
-      description: 'Flux client credentials — le vrai chemin d''authentification de
-        Graph.
+      description: 'Client credentials flow -- Graph''s real authentication path.
 
 
-        Les quatre refus reproduisent des réponses OBSERVÉES le 2026-09-03 : statut,
+        The four refusals reproduce responses OBSERVED on 2026-09-03: status,
 
-        code OAuth2 et code AADSTS. Aucun n''est inventé.'
+        OAuth2 code and AADSTS code. None of it is invented.'
       operationId: token__tenant__oauth2_v2_0_token_post
       parameters:
       - name: tenant
@@ -49,14 +48,14 @@ paths:
                 $ref: '#/components/schemas/HTTPValidationError'
   /v1.0/groups:
     get:
-      summary: Groupes
-      description: 'Les groupes, PAGINÉS — comme Graph, qui en sert 100 par page.
+      summary: Groups
+      description: 'The groups, PAGINATED -- like Graph, which serves 100 per page.
 
 
-        Un client qui suivrait `@odata.nextLink` sur `/members` mais pas ici ne
+        A client following `@odata.nextLink` on `/members` but not here would see
 
-        verrait que les `GROUPS_PAGE_SIZE` premiers groupes, sans la moindre erreur.'
-      operationId: groupes_v1_0_groups_get
+        only the first `GROUPS_PAGE_SIZE` groups, without any error.'
+      operationId: groups_v1_0_groups_get
       responses:
         '200':
           description: Successful Response
@@ -65,16 +64,16 @@ paths:
               schema: {}
   /v1.0/groups/{group_id}/transitiveMembers:
     get:
-      summary: Membres Transitifs
-      description: 'L''appartenance EFFECTIVE, groupes imbriqués aplatis — comme Graph.
+      summary: Transitive Members
+      description: 'EFFECTIVE membership, nested groups flattened -- like Graph.
 
 
-        Même enveloppe, même curseur opaque, même `$select` que `/members` : seule
+        Same envelope, same opaque cursor, same `$select` as `/members`: only the
 
-        la composition de la collection change. C''est ce qui permet à un
+        collection''s composition changes. That is what lets a consumer switch
 
-        consommateur de basculer d''un chemin à l''autre sans réécrire sa pagination.'
-      operationId: membres_transitifs_v1_0_groups__group_id__transitiveMembers_get
+        from one path to the other without rewriting its pagination.'
+      operationId: transitive_members_v1_0_groups__group_id__transitiveMembers_get
       parameters:
       - name: group_id
         in: path
@@ -96,25 +95,25 @@ paths:
                 $ref: '#/components/schemas/HTTPValidationError'
   /v1.0/groups/{group_id}/members:
     get:
-      summary: Membres
-      description: 'Membres d''un groupe, paginés par curseur opaque — comme Graph.
+      summary: Members
+      description: 'A group''s members, paginated by opaque cursor -- like Graph.
 
 
-        Le curseur est ici l''index de départ encodé dans `@odata.nextLink`. Un
+        The cursor here is the starting index encoded in `@odata.nextLink`. A
 
-        pipeline qui ne suivrait pas ce lien ne verrait que les PAGE_SIZE premiers
+        pipeline that didn''t follow this link would see only the first PAGE_SIZE
 
-        membres, sans la moindre erreur. C''est pourquoi la page est petite.
+        members, without any error.
 
 
-        Les membres ne sont PAS tous des personnes : `members` est déclaré
+        Members are NOT all people: `members` is declared
 
-        `Collection(graph.directoryObject)` dans le CSDL officiel, et rend aussi
+        `Collection(graph.directoryObject)` in the official CSDL, and returns a
 
-        bien un groupe imbriqué qu''un principal de service. Les deux sont sans UPN,
+        nested group as well as a service principal. Both lack a UPN, and a
 
-        et un consommateur doit les traiter différemment.'
-      operationId: membres_v1_0_groups__group_id__members_get
+        consumer must treat them differently.'
+      operationId: members_v1_0_groups__group_id__members_get
       parameters:
       - name: group_id
         in: path
@@ -136,18 +135,16 @@ paths:
                 $ref: '#/components/schemas/HTTPValidationError'
   /v1.0/sites/{hostname}:/{server_relative_path}:
     get:
-      summary: Site Par Chemin
-      description: 'Le site par son CHEMIN — `/sites/{hôte}:/{chemin relatif au serveur}`.
+      summary: Site By Path
+      description: 'The site by its PATH -- `/sites/{host}:/{server-relative path}`.
 
 
-        C''est l''adressage qu''un client configure (un hôte et un chemin lisibles),
+        That''s the addressing a client configures (a readable host and path),
 
-        et il en tire l''identifiant COMPOSITE du site pour la suite. Le
+        and it derives the site''s COMPOSITE identifier from it for the rest. The
 
-        deux-points final optionnel (`…:/sites/documents:`) est accepté, comme
-
-        chez Graph.'
-      operationId: site_par_chemin_v1_0_sites__hostname____server_relative_path__get
+        optional trailing colon (`…:/sites/documents:`) is accepted, as at Graph.'
+      operationId: site_by_path_v1_0_sites__hostname____server_relative_path__get
       parameters:
       - name: hostname
         in: path
@@ -168,10 +165,10 @@ paths:
             application/json:
               schema: {}
         '401':
-          description: '`InvalidAuthenticationToken` — Bearer absent, expiré, autre
+          description: '`InvalidAuthenticationToken` -- Bearer missing, expired, wrong
             audience'
         '403':
-          description: '`accessDenied` — aucun rôle `Sites.Selected` accordé sur le
+          description: '`accessDenied` -- no `Sites.Selected` role granted on the
             site'
         '404':
           description: '`itemNotFound`'
@@ -186,7 +183,7 @@ paths:
   /v1.0/sites/{site_id}:
     get:
       summary: Site
-      description: Le site par son identifiant composite.
+      description: The site by its composite identifier.
       operationId: site_v1_0_sites__site_id__get
       parameters:
       - name: site_id
@@ -202,10 +199,10 @@ paths:
             application/json:
               schema: {}
         '401':
-          description: '`InvalidAuthenticationToken` — Bearer absent, expiré, autre
+          description: '`InvalidAuthenticationToken` -- Bearer missing, expired, wrong
             audience'
         '403':
-          description: '`accessDenied` — aucun rôle `Sites.Selected` accordé sur le
+          description: '`accessDenied` -- no `Sites.Selected` role granted on the
             site'
         '404':
           description: '`itemNotFound`'
@@ -219,9 +216,9 @@ paths:
                 $ref: '#/components/schemas/HTTPValidationError'
   /v1.0/sites/{site_id}/drive:
     get:
-      summary: Lecteur Par Defaut
-      description: La bibliothèque PAR DÉFAUT du site — « Documents ».
-      operationId: lecteur_par_defaut_v1_0_sites__site_id__drive_get
+      summary: Default Drive
+      description: The site's DEFAULT library -- "Documents".
+      operationId: default_drive_v1_0_sites__site_id__drive_get
       parameters:
       - name: site_id
         in: path
@@ -236,10 +233,10 @@ paths:
             application/json:
               schema: {}
         '401':
-          description: '`InvalidAuthenticationToken` — Bearer absent, expiré, autre
+          description: '`InvalidAuthenticationToken` -- Bearer missing, expired, wrong
             audience'
         '403':
-          description: '`accessDenied` — aucun rôle `Sites.Selected` accordé sur le
+          description: '`accessDenied` -- no `Sites.Selected` role granted on the
             site'
         '404':
           description: '`itemNotFound`'
@@ -253,9 +250,9 @@ paths:
                 $ref: '#/components/schemas/HTTPValidationError'
   /v1.0/sites/{site_id}/drives:
     get:
-      summary: Lecteurs
-      description: Les bibliothèques du site, en collection `value[]`.
-      operationId: lecteurs_v1_0_sites__site_id__drives_get
+      summary: Drives
+      description: The site's libraries, as a `value[]` collection.
+      operationId: drives_v1_0_sites__site_id__drives_get
       parameters:
       - name: site_id
         in: path
@@ -270,10 +267,10 @@ paths:
             application/json:
               schema: {}
         '401':
-          description: '`InvalidAuthenticationToken` — Bearer absent, expiré, autre
+          description: '`InvalidAuthenticationToken` -- Bearer missing, expired, wrong
             audience'
         '403':
-          description: '`accessDenied` — aucun rôle `Sites.Selected` accordé sur le
+          description: '`accessDenied` -- no `Sites.Selected` role granted on the
             site'
         '404':
           description: '`itemNotFound`'
@@ -287,9 +284,9 @@ paths:
                 $ref: '#/components/schemas/HTTPValidationError'
   /v1.0/drives/{drive_id}:
     get:
-      summary: Lecteur
-      description: Un lecteur par son identifiant `b!…`.
-      operationId: lecteur_v1_0_drives__drive_id__get
+      summary: Drive
+      description: A drive by its `b!…` identifier.
+      operationId: drive_v1_0_drives__drive_id__get
       parameters:
       - name: drive_id
         in: path
@@ -304,10 +301,10 @@ paths:
             application/json:
               schema: {}
         '401':
-          description: '`InvalidAuthenticationToken` — Bearer absent, expiré, autre
+          description: '`InvalidAuthenticationToken` -- Bearer missing, expired, wrong
             audience'
         '403':
-          description: '`accessDenied` — aucun rôle `Sites.Selected` accordé sur le
+          description: '`accessDenied` -- no `Sites.Selected` role granted on the
             site'
         '404':
           description: '`itemNotFound`'
@@ -321,9 +318,9 @@ paths:
                 $ref: '#/components/schemas/HTTPValidationError'
   /v1.0/drives/{drive_id}/root:
     get:
-      summary: Racine
-      description: La racine du lecteur.
-      operationId: racine_v1_0_drives__drive_id__root_get
+      summary: Root
+      description: The drive's root.
+      operationId: root_v1_0_drives__drive_id__root_get
       parameters:
       - name: drive_id
         in: path
@@ -338,10 +335,10 @@ paths:
             application/json:
               schema: {}
         '401':
-          description: '`InvalidAuthenticationToken` — Bearer absent, expiré, autre
+          description: '`InvalidAuthenticationToken` -- Bearer missing, expired, wrong
             audience'
         '403':
-          description: '`accessDenied` — aucun rôle `Sites.Selected` accordé sur le
+          description: '`accessDenied` -- no `Sites.Selected` role granted on the
             site'
         '404':
           description: '`itemNotFound`'
@@ -355,9 +352,9 @@ paths:
                 $ref: '#/components/schemas/HTTPValidationError'
   /v1.0/drives/{drive_id}/root/children:
     get:
-      summary: Enfants De La Racine
-      description: Les enfants de la racine — vides tant que rien n'a été écrit.
-      operationId: enfants_de_la_racine_v1_0_drives__drive_id__root_children_get
+      summary: Root Children
+      description: The root's children -- empty until something is written.
+      operationId: root_children_v1_0_drives__drive_id__root_children_get
       parameters:
       - name: drive_id
         in: path
@@ -372,10 +369,10 @@ paths:
             application/json:
               schema: {}
         '401':
-          description: '`InvalidAuthenticationToken` — Bearer absent, expiré, autre
+          description: '`InvalidAuthenticationToken` -- Bearer missing, expired, wrong
             audience'
         '403':
-          description: '`accessDenied` — aucun rôle `Sites.Selected` accordé sur le
+          description: '`accessDenied` -- no `Sites.Selected` role granted on the
             site'
         '404':
           description: '`itemNotFound`'
@@ -387,15 +384,15 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
-  /v1.0/drives/{drive_id}/root:/{chemin}:
+  /v1.0/drives/{drive_id}/root:/{path}:
     get:
-      summary: Par Chemin
-      description: "L'adressage PAR CHEMIN, sous ses trois formes :\n\n• `root:/reports:/children`\
-        \ — les enfants d'un dossier, PAGINÉS\n  (`@odata.nextLink`, `$skiptoken`\
-        \ opaque), `$select` honoré ;\n• `root:/reports/report-1.txt` (deux-points\
-        \ final facultatif) — un\n  élément ;\n• `root:/reports/report-1.txt:/content`\
-        \ — 302 vers l'URL de\n  téléchargement.\n\nLa casse du chemin est indifférente."
-      operationId: par_chemin_v1_0_drives__drive_id__root___chemin__get
+      summary: By Path
+      description: "PATH addressing, in its three forms:\n\n• `root:/reports:/children`\
+        \ -- a folder's children, PAGINATED\n  (`@odata.nextLink`, opaque `$skiptoken`),\
+        \ `$select` honoured;\n• `root:/reports/report-1.txt` (trailing colon optional)\
+        \ -- an item;\n• `root:/reports/report-1.txt:/content` -- 302 to the download\
+        \ URL.\n\nThe path's case is immaterial."
+      operationId: by_path_v1_0_drives__drive_id__root___path__get
       parameters:
       - name: drive_id
         in: path
@@ -403,12 +400,12 @@ paths:
         schema:
           type: string
           title: Drive Id
-      - name: chemin
+      - name: path
         in: path
         required: true
         schema:
           type: string
-          title: Chemin
+          title: Path
       responses:
         '200':
           description: Successful Response
@@ -416,19 +413,19 @@ paths:
             application/json:
               schema: {}
         '401':
-          description: '`InvalidAuthenticationToken` — Bearer absent, expiré, autre
+          description: '`InvalidAuthenticationToken` -- Bearer missing, expired, wrong
             audience'
         '403':
-          description: '`accessDenied` — aucun rôle `Sites.Selected` accordé sur le
+          description: '`accessDenied` -- no `Sites.Selected` role granted on the
             site'
         '404':
           description: '`itemNotFound`'
         '429':
           description: '`TooManyRequests` + `Retry-After` (injectable)'
         '302':
-          description: 'Redirection vers une URL de téléchargement PRÉ-AUTHENTIFIÉE
-            (`Location`, `tempauth` à durée limitée). À suivre SANS en-tête Authorization
-            : l''URL rend 401 si on lui en présente un.'
+          description: 'Redirect to a PRE-AUTHENTICATED download URL (`Location`,
+            short-lived `tempauth`). Follow it WITHOUT an Authorization header: the
+            URL returns 401 if one is presented.'
         '422':
           description: Validation Error
           content:
@@ -437,9 +434,9 @@ paths:
                 $ref: '#/components/schemas/HTTPValidationError'
   /v1.0/drives/{drive_id}/items/{item_id}:
     get:
-      summary: Element Par Identifiant
-      description: Un élément par son identifiant `01…`.
-      operationId: element_par_identifiant_v1_0_drives__drive_id__items__item_id__get
+      summary: Item By Id
+      description: An item by its `01…` identifier.
+      operationId: item_by_id_v1_0_drives__drive_id__items__item_id__get
       parameters:
       - name: drive_id
         in: path
@@ -460,10 +457,10 @@ paths:
             application/json:
               schema: {}
         '401':
-          description: '`InvalidAuthenticationToken` — Bearer absent, expiré, autre
+          description: '`InvalidAuthenticationToken` -- Bearer missing, expired, wrong
             audience'
         '403':
-          description: '`accessDenied` — aucun rôle `Sites.Selected` accordé sur le
+          description: '`accessDenied` -- no `Sites.Selected` role granted on the
             site'
         '404':
           description: '`itemNotFound`'
@@ -477,9 +474,9 @@ paths:
                 $ref: '#/components/schemas/HTTPValidationError'
   /v1.0/drives/{drive_id}/items/{item_id}/children:
     get:
-      summary: Enfants Par Identifiant
-      description: Les enfants d'un dossier désigné par son identifiant — même pagination.
-      operationId: enfants_par_identifiant_v1_0_drives__drive_id__items__item_id__children_get
+      summary: Children By Id
+      description: A folder's children by its identifier -- same pagination.
+      operationId: children_by_id_v1_0_drives__drive_id__items__item_id__children_get
       parameters:
       - name: drive_id
         in: path
@@ -500,10 +497,10 @@ paths:
             application/json:
               schema: {}
         '401':
-          description: '`InvalidAuthenticationToken` — Bearer absent, expiré, autre
+          description: '`InvalidAuthenticationToken` -- Bearer missing, expired, wrong
             audience'
         '403':
-          description: '`accessDenied` — aucun rôle `Sites.Selected` accordé sur le
+          description: '`accessDenied` -- no `Sites.Selected` role granted on the
             site'
         '404':
           description: '`itemNotFound`'
@@ -517,14 +514,14 @@ paths:
                 $ref: '#/components/schemas/HTTPValidationError'
   /v1.0/drives/{drive_id}/items/{item_id}/content:
     get:
-      summary: Contenu
-      description: 'Le contenu d''un fichier : 302 vers une URL PRÉ-AUTHENTIFIÉE.
+      summary: Content
+      description: 'A file''s content: 302 to a PRE-AUTHENTICATED URL.
 
 
-        C''est ce que Graph rend, et il faut le suivre SANS le Bearer — l''URL porte
+        That''s what Graph returns, and it must be followed WITHOUT the Bearer --
 
-        sa propre autorisation (`tempauth`), limitée dans le temps.'
-      operationId: contenu_v1_0_drives__drive_id__items__item_id__content_get
+        the URL carries its own authorization (`tempauth`), time-limited.'
+      operationId: content_v1_0_drives__drive_id__items__item_id__content_get
       parameters:
       - name: drive_id
         in: path
@@ -545,19 +542,19 @@ paths:
             application/json:
               schema: {}
         '401':
-          description: '`InvalidAuthenticationToken` — Bearer absent, expiré, autre
+          description: '`InvalidAuthenticationToken` -- Bearer missing, expired, wrong
             audience'
         '403':
-          description: '`accessDenied` — aucun rôle `Sites.Selected` accordé sur le
+          description: '`accessDenied` -- no `Sites.Selected` role granted on the
             site'
         '404':
           description: '`itemNotFound`'
         '429':
           description: '`TooManyRequests` + `Retry-After` (injectable)'
         '302':
-          description: 'Redirection vers une URL de téléchargement PRÉ-AUTHENTIFIÉE
-            (`Location`, `tempauth` à durée limitée). À suivre SANS en-tête Authorization
-            : l''URL rend 401 si on lui en présente un.'
+          description: 'Redirect to a PRE-AUTHENTICATED download URL (`Location`,
+            short-lived `tempauth`). Follow it WITHOUT an Authorization header: the
+            URL returns 401 if one is presented.'
         '422':
           description: Validation Error
           content:

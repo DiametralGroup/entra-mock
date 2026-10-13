@@ -1,16 +1,16 @@
-"""Le plan de contrôle `/__admin` — hors de la surface Graph.
+"""The `/__admin` control plane -- outside the Graph surface.
 
-  • le routeur n'est MONTÉ que si `ENTRA_MOCK_ADMIN_ENABLED` est vrai — pas
-    « monté puis interdit » : absent. Impossible donc de le laisser ouvert par
-    accident ;
-  • chaque appel présente `X-Mock-Admin-Token` (`ENTRA_MOCK_ADMIN_TOKEN`) ;
-  • le préfixe `/__admin` ne peut collisionner avec aucun chemin Graph, qui
-    vivent tous sous `/v1.0`, ni avec l'hôte du site (`/sites/…`).
+  • the router is MOUNTED only if `ENTRA_MOCK_ADMIN_ENABLED` is true -- not
+    "mounted then forbidden": absent. So it can never be left open by
+    accident;
+  • every call presents `X-Mock-Admin-Token` (`ENTRA_MOCK_ADMIN_TOKEN`);
+  • the `/__admin` prefix can't collide with any Graph path, which all live
+    under `/v1.0`, nor with the site's host (`/sites/…`).
 
-Il existe parce que le mock tourne en CONTENEUR chez son client : un test ne
-peut pas muter l'état en Python, il lui faut du HTTP — pour écrire un fichier,
-en écraser un, en retirer un, ou compter ses téléchargements. Le lecteur est
-VIDE au démarrage : c'est ici qu'un test le remplit.
+It exists because the mock runs in a CONTAINER at the client's premises: a
+test can't mutate the state in Python, it needs HTTP -- to write a file,
+overwrite one, remove one, or count its downloads. The drive is EMPTY at
+startup: this is where a test fills it.
 """
 
 from __future__ import annotations
@@ -24,8 +24,8 @@ from fastapi import APIRouter, Header, Request, Response
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
-from .app import _erreur_graph, reinitialiser_appels
-from .drive import _rendu, lecteur_mock, nom_valide
+from .app import _graph_error, reset_calls
+from .drive import _render, mock_drive, valid_name
 
 _ISO_UTC = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z")
 
@@ -36,101 +36,102 @@ router: APIRouter = APIRouter(
 )
 
 
-def _refuse(jeton: str | None) -> JSONResponse | None:
-    if not jeton or not hmac.compare_digest(jeton.encode(), ADMIN_TOKEN.encode()):
-        return _erreur_graph(403, "Forbidden", "invalid or missing X-Mock-Admin-Token")
+def _reject(token: str | None) -> JSONResponse | None:
+    if not token or not hmac.compare_digest(token.encode(), ADMIN_TOKEN.encode()):
+        return _graph_error(403, "Forbidden", "invalid or missing X-Mock-Admin-Token")
     return None
 
 
 @router.post("/reset")
 def reset(x_mock_admin_token: str | None = Header(default=None)) -> Response:
-    """Tout le mock remis à neuf : le lecteur (vide), ses compteurs, le droit
-    sur le site, et le compteur d'appels qui cadence l'étranglement."""
-    if (refus := _refuse(x_mock_admin_token)) is not None:
-        return refus
-    lecteur_mock.reinitialiser()
-    reinitialiser_appels()
+    """Resets the whole mock: the drive (empty), its counters, the site
+    grant, and the call counter that paces throttling."""
+    if (refusal := _reject(x_mock_admin_token)) is not None:
+        return refusal
+    mock_drive.reset()
+    reset_calls()
     return JSONResponse({"status": "reset"})
 
 
-@router.put("/drive/files/{chemin:path}")
-async def ecrire(
-    chemin: str, request: Request, x_mock_admin_token: str | None = Header(default=None)
+@router.put("/drive/files/{path:path}")
+async def write(
+    path: str, request: Request, x_mock_admin_token: str | None = Header(default=None)
 ) -> Response:
-    """Écrit un fichier — le corps BRUT est son contenu.
+    """Writes a file -- the RAW body is its content.
 
-    Le chemin part de la RACINE du lecteur : `reports/report-1.txt`. Les
-    dossiers qui n'existent pas encore sont créés au passage.
-    201 à la création, 200 à l'écrasement — qui garde l'identifiant, passe le
-    `n` de `eTag`/`cTag` à n+1 et avance `lastModifiedDateTime` d'une minute
-    sur l'horloge du mock (jamais l'horloge murale : cf. `drive.py`).
+    The path starts from the drive's ROOT: `reports/report-1.txt`. Folders
+    that don't exist yet are created along the way.
+    201 on create, 200 on overwrite -- which keeps the id, bumps the `n` of
+    `eTag`/`cTag` by one, and advances `lastModifiedDateTime` by one minute
+    on the mock's clock (never the wall clock: see `drive.py`).
 
-    `?lastModifiedDateTime=2026-09-05T08:00:00Z` fixe la date du fichier au
-    lieu de l'horloge du mock.
+    `?lastModifiedDateTime=2026-09-05T08:00:00Z` sets the file's date instead
+    of the mock clock.
     """
-    if (refus := _refuse(x_mock_admin_token)) is not None:
-        return refus
-    if not nom_valide(chemin):
-        return _erreur_graph(400, "invalidRequest", f"Invalid file name: '{chemin}'")
-    modifie = request.query_params.get("lastModifiedDateTime")
-    if modifie is not None and not _ISO_UTC.fullmatch(modifie):
-        return _erreur_graph(
+    if (refusal := _reject(x_mock_admin_token)) is not None:
+        return refusal
+    if not valid_name(path):
+        return _graph_error(400, "invalidRequest", f"Invalid file name: '{path}'")
+    modified = request.query_params.get("lastModifiedDateTime")
+    if modified is not None and not _ISO_UTC.fullmatch(modified):
+        return _graph_error(
             400, "invalidRequest", "lastModifiedDateTime: expected YYYY-MM-DDTHH:MM:SSZ"
         )
     try:
-        element, cree = lecteur_mock.ecrire(chemin, await request.body(), modifie)
+        item, created = mock_drive.write(path, await request.body(), modified)
     except (IsADirectoryError, NotADirectoryError) as exc:
-        return _erreur_graph(409, "nameAlreadyExists", f"A folder is in the way: '{exc}'")
-    return JSONResponse(_rendu(element, request), status_code=201 if cree else 200)
+        return _graph_error(409, "nameAlreadyExists", f"A folder is in the way: '{exc}'")
+    return JSONResponse(_render(item, request), status_code=201 if created else 200)
 
 
-@router.delete("/drive/files/{chemin:path}")
-def retirer(chemin: str, x_mock_admin_token: str | None = Header(default=None)) -> Response:
-    """Retire un fichier — ou un dossier et tout son contenu. 204, ou 404."""
-    if (refus := _refuse(x_mock_admin_token)) is not None:
-        return refus
-    if not lecteur_mock.retirer(chemin):
-        return _erreur_graph(404, "itemNotFound", "The resource could not be found.")
+@router.delete("/drive/files/{path:path}")
+def remove(path: str, x_mock_admin_token: str | None = Header(default=None)) -> Response:
+    """Removes a file -- or a folder and everything inside it. 204, or 404."""
+    if (refusal := _reject(x_mock_admin_token)) is not None:
+        return refusal
+    if not mock_drive.remove(path):
+        return _graph_error(404, "itemNotFound", "The resource could not be found.")
     return Response(status_code=204)
 
 
 @router.post("/drive/reset")
-def reset_lecteur(x_mock_admin_token: str | None = Header(default=None)) -> Response:
-    """Le lecteur seul redevient VIDE — compteurs et horloge compris."""
-    if (refus := _refuse(x_mock_admin_token)) is not None:
-        return refus
-    lecteur_mock.reinitialiser()
+def reset_drive(x_mock_admin_token: str | None = Header(default=None)) -> Response:
+    """The drive alone goes back to EMPTY -- counters and clock included."""
+    if (refusal := _reject(x_mock_admin_token)) is not None:
+        return refusal
+    mock_drive.reset()
     return JSONResponse({"status": "reset"})
 
 
 @router.get("/drive/counters")
-def compteurs(x_mock_admin_token: str | None = Header(default=None)) -> Response:
-    """Les appels par opération depuis la dernière remise à zéro.
+def counters(x_mock_admin_token: str | None = Header(default=None)) -> Response:
+    """Calls per operation since the last reset.
 
-    Seuls comptent les appels AUTHENTIFIÉS et NON ÉTRANGLÉS : un 429 rejoué ne
-    gonfle pas `content`. C'est ce qui permet de PROUVER qu'un second run
-    idempotent ne retélécharge rien (`content` et `download` inchangés).
+    Only AUTHENTICATED and NON-THROTTLED calls count: a replayed 429 doesn't
+    inflate `content`. That is what makes it possible to PROVE that a second,
+    idempotent run doesn't redownload anything (`content` and `download`
+    unchanged).
     """
-    if (refus := _refuse(x_mock_admin_token)) is not None:
-        return refus
+    if (refusal := _reject(x_mock_admin_token)) is not None:
+        return refusal
     operations = ("site", "drive", "drives", "item", "children", "content", "download")
-    return JSONResponse({op: lecteur_mock.compteurs[op] for op in operations})
+    return JSONResponse({op: mock_drive.counters[op] for op in operations})
 
 
-class DemandeDroit(BaseModel):
+class GrantRequest(BaseModel):
     grant: Literal["none", "read"]
 
 
 @router.post("/drive/grant")
-def droit(demande: DemandeDroit, x_mock_admin_token: str | None = Header(default=None)) -> Any:
-    """Change le rôle de l'application sur le site, à chaud.
+def grant(body: GrantRequest, x_mock_admin_token: str | None = Header(default=None)) -> Any:
+    """Changes the application's role on the site, at runtime.
 
-    `none` reproduit l'application `Sites.Selected` à qui personne n'a encore
-    accordé le site : 403 `accessDenied` partout. Le pendant runtime de
-    `ENTRA_MOCK_SITE_GRANT` — un conteneur de CI ne se redémarre pas entre
-    deux tests.
+    `none` reproduces the `Sites.Selected` application nobody has yet granted
+    the site to: 403 `accessDenied` everywhere. The runtime counterpart of
+    `ENTRA_MOCK_SITE_GRANT` -- a CI container doesn't restart between two
+    tests.
     """
-    if (refus := _refuse(x_mock_admin_token)) is not None:
-        return refus
-    lecteur_mock.droit = demande.grant
-    return {"status": "updated", "grant": lecteur_mock.droit}
+    if (refusal := _reject(x_mock_admin_token)) is not None:
+        return refusal
+    mock_drive.grant = body.grant
+    return {"status": "updated", "grant": mock_drive.grant}

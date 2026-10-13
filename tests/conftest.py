@@ -1,10 +1,11 @@
-"""Harnais de tests — l'application montée en process.
+"""Test harness -- the application mounted in-process.
 
-La propriété qu'il ne faut pas perdre : l'application que la stack interroge
-EST celle que les tests exercent.
+The property that must not be lost: the application the stack calls IS the
+one the tests exercise.
 
-Le plan de contrôle `/__admin` est monté — le montage est conditionnel et la
-configuration est lue à l'import, d'où le réglage posé AVANT l'import du paquet.
+The `/__admin` control plane is mounted -- mounting is conditional and the
+configuration is read at import time, hence the setting is applied BEFORE the
+package is imported.
 """
 
 from __future__ import annotations
@@ -22,9 +23,10 @@ from fastapi.testclient import TestClient
 
 import entra_mock as mock
 
-# `entra_mock.app` est l'INSTANCE FastAPI après le `from .app import app` du
-# paquet : importer le module par son nom est le seul accès non ambigu à ses
-# constantes (taille de page, étranglement) que les tests doivent piloter.
+# `entra_mock.app` is the FastAPI INSTANCE after the package's
+# `from .app import app`: importing the module by name is the only
+# unambiguous access to its constants (page size, throttling) the tests must
+# drive.
 app_module = import_module("entra_mock.app")
 drive_module = import_module("entra_mock.drive")
 
@@ -40,9 +42,9 @@ def client():
 
 
 @pytest.fixture()
-def jeton(client) -> str:
-    """Un jeton obtenu par le VRAI flux — jamais fabriqué à la main : c'est le
-    chemin d'authentification que le consommateur doit emprunter."""
+def token(client) -> str:
+    """A token obtained through the REAL flow -- never crafted by hand: that
+    is the authentication path a consumer must take."""
     r = client.post(
         f"/{TENANT}/oauth2/v2.0/token",
         data={
@@ -56,30 +58,31 @@ def jeton(client) -> str:
 
 
 @pytest.fixture()
-def auth(jeton: str) -> dict[str, str]:
-    return {"Authorization": f"Bearer {jeton}"}
+def auth(token: str) -> dict[str, str]:
+    return {"Authorization": f"Bearer {token}"}
 
 
-def tous_les_groupes(client, auth) -> list[dict]:
-    """Les groupes en SUIVANT le curseur — `/v1.0/groups` pagine depuis 0.3.0.
+def all_groups(client, auth) -> list[dict]:
+    """The groups, FOLLOWING the cursor -- `/v1.0/groups` paginates since
+    0.3.0.
 
-    Le mock rendait ses groupes d'un coup, comme aucune instance réelle ne le
-    fait. Un helper qui ne paginerait pas ferait passer les tests de ce dépôt
-    pour verts tout en laissant le consommateur ignorer le curseur : exactement
-    le défaut trouvé dans insights360 le 2026-09-03.
+    The mock used to return all its groups at once, as no real instance
+    does. A helper that didn't paginate would make this repo's tests pass
+    while still letting the consumer ignore the cursor: exactly the defect
+    found in insights360 on 2026-09-03.
     """
-    groupes: list[dict] = []
+    groups: list[dict] = []
     url = "/v1.0/groups"
     while url:
-        corps = client.get(url, headers=auth).json()
-        groupes.extend(corps["value"])
-        suivant = corps.get("@odata.nextLink")
-        url = suivant.replace("http://testserver", "") if suivant else ""
-    return groupes
+        body = client.get(url, headers=auth).json()
+        groups.extend(body["value"])
+        next_link = body.get("@odata.nextLink")
+        url = next_link.replace("http://testserver", "") if next_link else ""
+    return groups
 
 
-def forger_jeton(*, aud: str = CLIENT_ID, expire_dans: int = 3600) -> str:
-    """Un jeton fabriqué — sert UNIQUEMENT à éprouver les refus (expiration,
-    mauvaise audience) que le flux normal ne sait pas produire."""
-    charge = json.dumps({"aud": aud, "exp": int(time.time()) + expire_dans}).encode()
-    return base64.urlsafe_b64encode(charge).rstrip(b"=").decode()
+def forge_token(*, aud: str = CLIENT_ID, expires_in: int = 3600) -> str:
+    """A crafted token -- used ONLY to exercise refusals (expiry, wrong
+    audience) the normal flow can't produce."""
+    payload = json.dumps({"aud": aud, "exp": int(time.time()) + expires_in}).encode()
+    return base64.urlsafe_b64encode(payload).rstrip(b"=").decode()
